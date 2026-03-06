@@ -1,0 +1,29 @@
+2026-02-18 14:46:37,444 DEBUG thunderbird: Developer login attempt: authname=Thunderbird
+2026-02-18 14:46:37,445 DEBUG thunderbird: Developer login failed
+2026-02-18 14:46:41,604 DEBUG thunderbird: Developer login attempt: authname=Thunderbird
+2026-02-18 14:46:41,604 DEBUG thunderbird: Developer login failed
+2026-02-18 14:47:18,238 DEBUG thunderbird: Developer login attempt: authname=Thunderbird
+2026-02-18 14:47:18,239 INFO thunderbird: Developer mode credentials accepted.
+2026-02-18 14:47:18,269 ERROR thunderbird: Uncaught exception
+Traceback (most recent call last):
+  File "/Users/fox/Documents/YAZILIM/PYTHON/ThunderbirdAI/ThunderbirdMLM/Thunderbird.py", line 440, in attempt_dev_login
+    self.enable_dev_mode()
+    ~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/fox/Documents/YAZILIM/PYTHON/ThunderbirdAI/ThunderbirdMLM/Thunderbird.py", line 1016, in enable_dev_mode
+    self.dev_window = DevGUI()
+                      ~~~~~~^^
+  File "/Users/fox/Documents/YAZILIM/PYTHON/ThunderbirdAI/ThunderbirdMLM/Thunderbird.py", line 2206, in __init__
+    self.init_ui()
+    ^^^^^^^^^^^^
+AttributeError: 'DevGUI' object has no attribute 'init_ui'
+2026-02-18 14:47:18,431 DEBUG thunderbird: Preview theme applied: system
+2026-02-18 14:47:18,433 ERROR thunderbird: Failed to refresh themed widgets during preview
+Traceback (most recent call last):
+  File "/Users/fox/Documents/YAZILIM/PYTHON/ThunderbirdAI/ThunderbirdMLM/Thunderbird.py", line 1680, in _apply_theme_styles
+    self.refresh_theme_widgets()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/fox/Documents/YAZILIM/PYTHON/ThunderbirdAI/ThunderbirdMLM/Thunderbird.py", line 1704, in refresh_theme_widgets
+    cursor.execute("UPDATE user_profile SET theme=? WHERE email=?", (theme, self.logged_in_email))
+                                                                     ^^^^^
+NameError: name 'theme' is not defined. Did you mean: 'time'?
+2026-02-18 14:47:18,434 INFO thunderbird: Theme persisted: system
