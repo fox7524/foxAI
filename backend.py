@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime
 import os
+import database
 
 # Try to import llama_cpp, handle if missing for dev environment
 try:
@@ -25,9 +26,29 @@ class ModelManager:
             cls._instance.settings = {
                 "n_ctx": 2048,
                 "n_gpu_layers": -1, # Default to max layers on GPU (Metal on Mac)
-                "verbose": False
+                "verbose": False,
+                "max_tokens": 128,
+                "temperature": 0.7
             }
+            cls._instance.load_config()
         return cls._instance
+
+    def load_config(self):
+        try:
+            self.settings["max_tokens"] = int(database.get_config("max_tokens", "128"))
+            self.settings["temperature"] = float(database.get_config("temperature", "0.7"))
+            self.model_path = database.get_config("model_path", None)
+        except Exception as e:
+            logger.error(f"Error loading config: {e}")
+
+    def save_config(self):
+        try:
+            database.set_config("max_tokens", str(self.settings.get("max_tokens", 128)))
+            database.set_config("temperature", str(self.settings.get("temperature", 0.7)))
+            if self.model_path:
+                database.set_config("model_path", self.model_path)
+        except Exception as e:
+            logger.error(f"Error saving config: {e}")
 
     def load_model(self, model_path, n_ctx=2048, n_gpu_layers=-1):
         if not LLAMA_AVAILABLE:
@@ -52,16 +73,23 @@ class ModelManager:
                 verbose=True
             )
             self.model_path = model_path
+            self.save_config() # Save the successful model path
             logger.info("Model loaded successfully.")
             return True
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             return False
 
-    def generate_response(self, prompt, max_tokens=128, temperature=0.7, stop=None):
+    def generate_response(self, prompt, max_tokens=None, temperature=None, stop=None):
         if not self.model:
             return "Model not loaded. Please load a GGUF model in Developer Settings."
         
+        # Use provided args or fallback to instance settings
+        if max_tokens is None:
+            max_tokens = self.settings.get("max_tokens", 128)
+        if temperature is None:
+            temperature = self.settings.get("temperature", 0.7)
+
         try:
             output = self.model(
                 prompt,
@@ -122,9 +150,20 @@ class DatasetManager:
         return self.dataset
 
     def export_for_colab(self, file_path):
-        # Format for Unsloth/Colab typically JSONL with "instruction", "input" (optional), "output"
-        # We'll stick to simple instruction/output format for now
-        return self.save_dataset(file_path)
+        # Format for Unsloth/Colab typically requires "instruction", "input", "output"
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                for entry in self.dataset:
+                    # Create a new dict with input field if missing
+                    export_entry = {
+                        "instruction": entry.get("instruction", ""),
+                        "input": entry.get("input", ""), # Ensure input field exists
+                        "output": entry.get("output", "")
+                    }
+                    f.write(json.dumps(export_entry) + '\n')
+            return True, f"Exported {len(self.dataset)} entries to {file_path}."
+        except Exception as e:
+            return False, str(e)
 
 dataset_manager = DatasetManager()
 
@@ -145,6 +184,7 @@ def get_response(user_input, context, tone, emotion, interest):
             full_prompt += f"Context:\n{context}\n"
         full_prompt += f"User: {user_input}\nAssistant:"
         
+        # Pass None so it uses settings from ModelManager
         return model_manager.generate_response(full_prompt)
 
     # 2. Fallback logic (existing)

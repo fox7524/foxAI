@@ -268,6 +268,11 @@ class DevGUI(QWidget):
         path_layout = QHBoxLayout()
         self.model_path_input = QLineEdit()
         self.model_path_input.setPlaceholderText("/path/to/model.gguf")
+        
+        # Load path from backend
+        if backend.model_manager.model_path:
+            self.model_path_input.setText(backend.model_manager.model_path)
+            
         browse_btn = QPushButton("Browse")
         self.style_button(browse_btn)
         browse_btn.clicked.connect(self.browse_model)
@@ -285,17 +290,23 @@ class DevGUI(QWidget):
         params_group = QGroupBox("Inference Parameters")
         params_layout = QFormLayout()
         
+        # Initialize values from backend
+        current_max_tokens = backend.model_manager.settings.get("max_tokens", 128)
+        current_temp = backend.model_manager.settings.get("temperature", 0.7)
+
         self.slider_max_tokens = QSlider(Qt.Horizontal)
         self.slider_max_tokens.setRange(64, 4096)
-        self.slider_max_tokens.setValue(128)
-        self.label_max_tokens = QLabel("128")
+        self.slider_max_tokens.setValue(current_max_tokens)
+        self.label_max_tokens = QLabel(str(current_max_tokens))
         self.slider_max_tokens.valueChanged.connect(lambda v: self.label_max_tokens.setText(str(v)))
+        self.slider_max_tokens.sliderReleased.connect(self.save_settings) # Save on release
         
         self.slider_temp = QSlider(Qt.Horizontal)
         self.slider_temp.setRange(0, 100) # 0.0 to 1.0
-        self.slider_temp.setValue(70)
-        self.label_temp = QLabel("0.7")
+        self.slider_temp.setValue(int(current_temp * 100))
+        self.label_temp = QLabel(str(current_temp))
         self.slider_temp.valueChanged.connect(lambda v: self.label_temp.setText(str(v/100.0)))
+        self.slider_temp.sliderReleased.connect(self.save_settings) # Save on release
         
         self.check_thinking = QCheckBox("Enable Thinking Mode (Chain of Thought)")
         
@@ -334,6 +345,13 @@ class DevGUI(QWidget):
 
     # --- Logic Implementations ---
 
+    def save_settings(self):
+        # Update backend settings
+        backend.model_manager.settings['max_tokens'] = self.slider_max_tokens.value()
+        backend.model_manager.settings['temperature'] = self.slider_temp.value() / 100.0
+        # Persist settings
+        backend.model_manager.save_config()
+
     def soru_sor(self):
         soru = self.input_field.text().strip()
         if not soru: return
@@ -352,12 +370,10 @@ class DevGUI(QWidget):
 
         start_time = time.time()
         try:
-            # Update Model Manager settings temporarily for this generation
-            backend.model_manager.settings['max_tokens'] = self.slider_max_tokens.value()
-            backend.model_manager.settings['temperature'] = self.slider_temp.value() / 100.0
+            # Ensure settings are current (in case slider wasn't released but moved)
+            self.save_settings()
             
             # Using backend.model_manager directly if possible, or via backend.get_response
-            # The backend.get_response is wired to use model_manager now.
             cevap = backend.get_response(soru, context_text, profile["tone"], self.emotion_mode, profile["interests"])
         except Exception as e:
             cevap = f"(Yerel AI Hatası: {e})"

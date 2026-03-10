@@ -112,13 +112,9 @@ class ChatbotGUI(QWidget):
             self.style_button(dev_mode_button, color="red")
             
             def handle_dev_login():
-                from dev_gui import DevGUI # Import here to avoid circular dependencies
                 self.dev_mode_enabled = True
                 self.logged_in_email = "developer@local"
                 dialog.accept()
-                self.dev_window = DevGUI()
-                self.dev_window.show()
-                self.hide()
                 
             dev_mode_button.clicked.connect(handle_dev_login)
             layout.addWidget(dev_mode_button)

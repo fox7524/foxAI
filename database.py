@@ -70,6 +70,33 @@ def initialize_user_profile():
     conn.commit()
     conn.close()
 
+def initialize_app_config():
+    conn = sqlite3.connect("memory.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS app_config (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def set_config(key, value):
+    conn = sqlite3.connect("memory.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)", (key, str(value)))
+    conn.commit()
+    conn.close()
+
+def get_config(key, default=None):
+    conn = sqlite3.connect("memory.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM app_config WHERE key = ?", (key,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else default
+
 def log_to_memory(user_input, bot_reply, source):
     conn = sqlite3.connect("memory.db")
     cursor = conn.cursor()

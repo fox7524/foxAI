@@ -43,6 +43,7 @@ if __name__ == "__main__":
     # Initialize DB before UI
     database.initialize_memory_db()
     database.initialize_user_profile()
+    database.initialize_app_config() # New config table
 
     # Initialize splash screen
     splash = QSplashScreen()
@@ -80,11 +81,34 @@ if __name__ == "__main__":
     if screen:
         splash.move(screen.geometry().center() - splash.rect().center())
 
-    # Booting progress bar loop
-    for i in range(0, 101, 15):
-        time.sleep(0.1)  # Faster boot
-        progress.setValue(i)
+    # Booting logic with Model Loading
+    progress.setValue(10)
+    QApplication.processEvents()
+    
+    # Check for saved model
+    saved_model_path = backend.model_manager.model_path # Loaded from config in init
+    if saved_model_path:
+        status_label.setText("Loading AI Model...")
+        progress.setValue(30)
         QApplication.processEvents()
+        
+        try:
+            print(f"Auto-loading model from: {saved_model_path}")
+            success = backend.model_manager.load_model(saved_model_path)
+            if success:
+                status_label.setText("Model Loaded!")
+            else:
+                status_label.setText("Model Load Failed")
+        except Exception as e:
+            logger.error(f"Error auto-loading model: {e}")
+            status_label.setText("Error Loading Model")
+    else:
+        status_label.setText("No Model Configured")
+    
+    progress.setValue(80)
+    time.sleep(0.5) # Brief pause to show status
+    progress.setValue(100)
+    QApplication.processEvents()
 
     splash.close()
 
@@ -93,9 +117,16 @@ if __name__ == "__main__":
         print("Launching User GUI...")
         user_window = ChatbotGUI()
         
-        # Launch Dev GUI
-        print("Launching Dev GUI...")
-        dev_window = DevGUI()
+        # Launch Dev GUI only if user entered Dev Mode
+        dev_window = None
+        if getattr(user_window, 'dev_mode_enabled', False):
+            print("Launching Dev GUI...")
+            dev_window = DevGUI()
+            if screen:
+                geom = screen.availableGeometry()
+                w, h = geom.width(), geom.height()
+                dev_window.move(int(3*w/4 - 400), int(h/2 - 350))
+            dev_window.show()
         
         # Position windows if possible
         if screen:
@@ -103,11 +134,8 @@ if __name__ == "__main__":
             w, h = geom.width(), geom.height()
             # User GUI on Left
             user_window.move(int(w/4 - 400), int(h/2 - 250))
-            # Dev GUI on Right
-            dev_window.move(int(3*w/4 - 400), int(h/2 - 350))
 
         user_window.show()
-        dev_window.show()
 
     except Exception as e:
         print("Error starting application:")
