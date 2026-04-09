@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QSplashScreen, QProgressBar, QSpacerItem, QSizePolicy, QColorDialog
 )
 from PyQt5.QtCore import Qt, QRect
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFon
 
 VERSION = "Thunderbird AI Volume Alpha (UI Mockup)"
 
