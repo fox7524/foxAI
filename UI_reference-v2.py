@@ -1,264 +1,178 @@
-from PyQt5.QtWidgets import QApplication, QSplashScreen, QLabel, QProgressBar, QVBoxLayout, QSpacerItem, QSizePolicy, QFont
-from PyQt5.QtCore import Qt
 import sys
-import time
-
-# Import necessary libraries for GUI and threading
-import sqlite3
-from datetime import datetime
-import requests
-from urllib.parse import quote
-from docx import Document
-import subprocess
-import uuid
-from PyQt5.QtWidgets import QSplashScreen
-from PyQt5.QtCore import QTimer
-import os
-import time
-import sys
-from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QTextEdit,
-    QLineEdit, QPushButton, QHBoxLayout, QLabel, QSplitter,
-    QDialog, QFormLayout, QComboBox, QMessageBox
-)
-from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
+                            QTextEdit, QLineEdit, QPushButton, QLabel, QComboBox,
+                            QFrame, QListWidget, QMessageBox)
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QProgressBar
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import Qt
 
-import logging
-
-
-def init_ui(self):
-    # Apply Apple-style Qt stylesheet
-    self.setStyleSheet("""
-        /* Main window styling */
-        QWidget {
-            background-color: #f5f5f7;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        }
+class ElegantChatApp(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.initUI()
         
-        /* Button styling - Apple's primary button */
-        QPushButton, QToolButton {
-            background-color: #0071e3;
-            color: white;
-            border-radius: 8px;
-            padding: 10px 24px;
-            font-weight: 500;
-            min-width: 80px;
-        }
+    def initUI(self):
+        # Main window configuration
+        self.setWindowTitle("Thunderbird AI - Elegant UI")
+        self.setWindowFlags(Qt.FramelessWindowHint)
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #f5f5f5;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            }
+        """)
         
-        /* Hover effect */
-        QPushButton:hover, QToolButton:hover {
-            background-color: #005bb7;
-        }
+        # Main layout
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
-        /* Disabled button */
-        QPushButton:disabled, QToolButton:disabled {
-            background-color: #cccccc;
-        }
+        # Sidebar with elegant design
+        sidebar = QFrame()
+        sidebar.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border-radius: 12px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                padding: 20px;
+            }
+        """)
+        sidebar.setFixedWidth(240)
         
-        /* Sidebar styling */
-        QWidget#sidebar {
-            background-color: #ffffff;
-            border-right: 1px solid #e0e0e0;
-            box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
-        }
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setSpacing(15)
         
-        /* Chat area styling */
-        QTextEdit {
-            background-color: #ffffff;
-            border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 12px;
-            font-size: 14px;
-        }
+        # Logo/title
+        logo = QLabel("Thunderbird AI")
+        logo.setFont(QFont("SF Pro Display", 18, QFont.Bold))
+        logo.setStyleSheet("color: #2c3e50;")
+        sidebar_layout.addWidget(logo, alignment=Qt.AlignTop)
         
-        /* Input field styling */
-        QLineEdit {
-            background-color: #ffffff;
-            border: 1px solid #d0d0d0;
-            border-radius: 6px;
-            padding: 8px 12px;
-            font-size: 14px;
-        }
+        # Navigation buttons
+        nav_buttons = [
+            ("🏠 Home", "#007AFF"),
+            ("⚙ Settings", "#3498db"),
+            ("🚪 Logout", "#e74c3c")
+        ]
         
-        /* Dialog styling */
-        QDialog {
-            background-color: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-        }
+        for text, color in nav_buttons:
+            btn = QPushButton(text)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {color};
+                    color: white;
+                    border-radius: 8px;
+                    padding: 12px;
+                    font-size: 14px;
+                }}
+                QPushButton:hover {{
+                    background-color: {self.darken_color(color, 0.8)};
+                }}
+            """)
+            sidebar_layout.addWidget(btn)
         
-        /* Menu styling */
-        QMenuBar {
-            background-color: #ffffff;
-            border-bottom: 1px solid #e0e0e0;
-        }
+        # Chat area
+        chat_area = QFrame()
+        chat_area.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border-radius: 12px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                padding: 20px;
+            }
+        """)
         
-        QMenuBar::item {
-            padding: 8px 16px;
-            color: #222222;
-        }
+        chat_layout = QVBoxLayout(chat_area)
+        chat_layout.setSpacing(15)
         
-        QMenuBar::item:selected {
-            background-color: #f0f0f0;
-        }
+        # Chat messages
+        self.chat_display = QTextEdit()
+        self.chat_display.setReadOnly(True)
+        self.chat_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #f9f9f9;
+                border: 1px solid #e0e0e0;
+                border-radius: 12px;
+                padding: 15px;
+                font-size: 14px;
+            }
+        """)
+        chat_layout.addWidget(self.chat_display)
         
-        /* Tab widget styling */
-        QTabWidget::pane {
-            border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 6px;
-        }
+        # Input area
+        input_frame = QFrame()
+        input_frame.setStyleSheet("QFrame { background-color: #ffffff; border-radius: 12px; }")
+        input_layout = QHBoxLayout(input_frame)
         
-        QTabBar {
-            border-bottom: 1px solid #e0e0e0;
-        }
+        self.input_field = QLineEdit()
+        self.input_field.setPlaceholderText("Type your message...")
+        self.input_field.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                padding: 12px;
+                font-size: 14px;
+            }
+        """)
+        input_layout.addWidget(self.input_field, 3)
         
-        QTabBar::tab {
-            background-color: #f5f5f7;
-            padding: 8px 16px;
-            margin-right: -1px;
-        }
+        send_btn = QPushButton("Send")
+        send_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #007AFF;
+                color: white;
+                border-radius: 8px;
+                padding: 12px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #005fa3;
+            }
+        """)
+        input_layout.addWidget(send_btn, 1)
         
-        QTabBar::tab:selected {
-            background-color: #ffffff;
-            border-top: 2px solid #0071e3;
-        }
+        chat_layout.addWidget(input_frame)
         
-        /* Progress bar */
-        QProgressBar {
-            background-color: #e0e0e0;
-            border-radius: 4px;
-        }
+        # Add components to main layout
+        main_layout.addWidget(sidebar)
+        main_layout.addWidget(chat_area)
         
-        QProgressBar::chunk {
-            background-color: #0071e3;
-            border-radius: 2px;
-        }
+        # Connect signals
+        send_btn.clicked.connect(self.send_message)
         
-        /* Scrollbar */
-        QScrollBar:vertical {
-            background-color: #f0f0f0;
-            width: 12px;
-        }
+    def darken_color(self, hex_color, factor):
+        """Darken a hex color by a given factor"""
+        if hex_color.startswith("#"):
+            hex_color = hex_color[1:]
+            
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
         
-        QScrollBar::handle:vertical {
-            background-color: #c0c0c0;
-            border-radius: 6px;
-        }
+        r = int(r * factor)
+        g = int(g * factor)
+        b = int(b * factor)
         
-        QScrollBar::add-line, QScrollBar::sub-line {
-            background-color: transparent;
-        }
-        
-        /* Tree view */
-        QTreeView, QListView {
-            background-color: #ffffff;
-            border: 1px solid #e0e0e0;
-            border-radius: 6px;
-        }
-        
-        /* Context menu */
-        QMenu {
-            background-color: #ffffff;
-            border: 1px solid #d0d0d0;
-            font-size: 14px;
-        }
-        
-        QMenu::item:selected {
-            background-color: #f0f0f0;
-        }
-        
-        /* Tooltip */
-        QToolTip {
-            background-color: #333333;
-            color: #ffffff;
-            border: 1px solid #555555;
-            padding: 4px 8px;
-            font-size: 13px;
-        }
-    """)
+        return f"#{r:02x}{g:02x}{b:02x}"
     
-    # Set object names for specific styling (e.g., sidebar)
-    self.sidebar.setObjectName("sidebar")
-    
-    # Continue with your existing init_ui logic
+    def send_message(self):
+        message = self.input_field.text().strip()
+        if not message:
+            return
+            
+        # Add message to chat
+        self.chat_display.append(f"<div style='margin-bottom: 10px;'><strong>You:</strong> {message}</div>")
+        self.input_field.clear()
+        
+        # Simulate bot response
+        self.chat_display.append(f"<div style='margin-bottom: 10px;'><strong>Bot:</strong> This is a simulated response to your message: '{message}'</div>")
+        
+        # Scroll to bottom
+        self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
 
-# Main application entry point
-if __name__ == "__main__":
-    print("App is starting...")
+if __name__ == '__main__':
     app = QApplication(sys.argv)
-    
-    # Initialize splash screen
-    splash = QSplashScreen()
-    splash.setFixedSize(300, 180)
-    splash.setWindowFlags(Qt.FramelessWindowHint)	
-    splash.setStyleSheet("background-color: black; color: white;")
-    splash.setFont(QFont("Arial", 16, QFont.Bold))
-
-    # Layout for splash
-    layout = QVBoxLayout(splash)
-    version_label = QLabel("VERSION")  # Replace "VERSION" with actual version
-    version_label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-    version_label.setStyleSheet("color: white; font-size: 18pt;")
-    layout.addWidget(version_label)
-
-    status_label = QLabel("Booting...")
-    status_label.setAlignment(Qt.AlignCenter)
-    status_label.setStyleSheet("color: white; font-size: 14pt; font-weight: bold;")
-    layout.addWidget(status_label)
-
-    progress = QProgressBar()
-    progress.setMaximum(100)
-    progress.setValue(0)
-    progress.setStyleSheet("QProgressBar {background-color: #444; color: white;}")
-    layout.addWidget(progress)
-
-    # Author label at bottom right with margin
-    author_label = QLabel("by FOX")
-    author_label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
-    author_label.setStyleSheet("color: gray; font-size: 10pt; margin-right: 18px; margin-bottom: 10px;")
-
-    # Spacer to push author_label to bottom
-    spacer = QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding)
-    layout.addItem(spacer)
-    layout.addWidget(author_label, alignment=Qt.AlignRight | Qt.AlignBottom)
-
-    splash.setLayout(layout)
-    splash.show()
-    print("Splash screen displayed")
-
-    # Center the splash screen using QApplication.primaryScreen()
-    screen = QApplication.primaryScreen()
-    if screen:
-        splash.move(screen.geometry().center() - splash.rect().center())
-
-    # Booting progress bar loop
-    for i in range(0, 101, 10):
-        time.sleep(0.6)
-        progress.setValue(i)
-        QApplication.processEvents()
-
-    splash.close()
-    print("Login window displayed")
-    
-    try:
-        # Replace ChatbotGUI with your actual main window class
-        pencere = QWidget()  # Example placeholder
-    except Exception as e:
-        print("Error initializing main window:")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-    # Show main window if not in dev mode
-    if not getattr(pencere, "dev_mode_enabled", False):
-        pencere.show()
-        print("Main window shown.")
-    else:
-        print("Developer mode active – main window hidden.")
-    
-    print("Main UI initialized")
+    window = ElegantChatApp()
+    window.resize(1000, 600)
+    window.show()
     sys.exit(app.exec_())
+
