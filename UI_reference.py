@@ -11,14 +11,14 @@ from PyQt5.QtWidgets import (
     QSplashScreen, QProgressBar, QSpacerItem, QSizePolicy, QColorDialog
 )
 from PyQt5.QtCore import Qt, QRect
-from PyQt5.QtGui import QFon
+from PyQt5 import QtGui
 
-VERSION = "Thunderbird AI Volume Alpha (UI Mockup)"
+VERSION = "Thunderbird AI Volume Alpha"
 
 class DevGUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Developer Panel (UI Mockup)")
+        self.setWindowTitle("Developer Panel")
         self.setGeometry(200, 200, 700, 500)
         self.current_theme = "system"
         self.memory_mode = "aktif"
@@ -101,16 +101,8 @@ class ChatbotGUI(QWidget):
             label.setStyleSheet("color: red; font-weight: bold;")
         self.shimmer_label = dummy_shimmer
 
-        self.ensure_login()
         self.init_ui()
 
-    def get_mock_profile(self):
-        return {
-            "username": "User", "language": "tr", "tone": "formal", 
-            "interests": "Teknoloji", "sources": "json", "email": self.logged_in_email, 
-            "first_name": "Fox", "last_name": "Test", "birthdate": "01/01/2000", 
-            "age": 24, "chat_count": 0, "theme": self.current_theme
-        }
 
     def style_button(self, button, color="#007ACC", text_color=None):
         cls_name = button.__class__.__name__
@@ -135,126 +127,6 @@ class ChatbotGUI(QWidget):
                 background-color: #2892D7;
             }}
         """)
-
-    def ensure_login(self):
-        while not self.logged_in_email:
-            dialog = QDialog(self)
-            dialog.setWindowTitle(VERSION)
-            dialog.resize(500, 600)
-            layout = QVBoxLayout(dialog)
-
-            selection_layout = QHBoxLayout()
-            login_select_btn = QPushButton("Log In")
-            register_select_btn = QPushButton("Sign Up")
-            self.style_button(login_select_btn)
-            self.style_button(register_select_btn)
-            selection_layout.addWidget(login_select_btn)
-            selection_layout.addWidget(register_select_btn)
-            
-            exit_btn = QPushButton("Exit")
-            self.style_button(exit_btn)
-            exit_btn.clicked.connect(lambda: sys.exit())
-            selection_layout.addWidget(exit_btn)
-            layout.addLayout(selection_layout)
-
-            dev_mode_button = QPushButton("Dev Mode")
-            self.style_button(dev_mode_button, color="red")
-            def handle_dev_login():
-                dev_dialog = QDialog(self)
-                dev_dialog.setWindowTitle("Dev Mode")
-                dev_layout = QVBoxLayout(dev_dialog)
-
-                username_input = QLineEdit()
-                username_input.setPlaceholderText("Auth Name")
-                password_input = QLineEdit()
-                password_input.setEchoMode(QLineEdit.Password)
-                password_input.setPlaceholderText("Pass")
-
-                dev_layout.addWidget(QLabel("AuthName:"))
-                dev_layout.addWidget(username_input)
-                dev_layout.addWidget(QLabel("Pass:"))
-                dev_layout.addWidget(password_input)
-
-                login_button = QPushButton("Login")
-                self.style_button(login_button, color="red")
-                def attempt_dev_login():
-                    dev_dialog.accept()
-                    dialog.accept()
-                    self.dev_mode_enabled = True
-                    self.logged_in_email = "developer@local"
-                    self.dev_window = DevGUI()
-                    self.dev_window.show()
-                    self.hide()
-                login_button.clicked.connect(attempt_dev_login)
-                dev_layout.addWidget(login_button)
-                dev_dialog.setLayout(dev_layout)
-                dev_dialog.exec_()
-
-            dev_mode_button.clicked.connect(handle_dev_login)
-            layout.addWidget(dev_mode_button)
-
-            login_widget = QWidget()
-            login_form = QVBoxLayout(login_widget)
-            reg_widget = QWidget()
-            reg_form = QVBoxLayout(reg_widget)
-            login_widget.setVisible(True)
-            reg_widget.setVisible(False)
-
-            # Login Form
-            login_email_input = QLineEdit()
-            login_email_input.setPlaceholderText("Email adresinizi girin")
-            login_password_input = QLineEdit()
-            login_password_input.setPlaceholderText("Şifre")
-            login_password_input.setEchoMode(QLineEdit.Password)
-            login_form.addWidget(QLabel("Email:"))
-            login_form.addWidget(login_email_input)
-            login_form.addWidget(QLabel("Şifre:"))
-            login_form.addWidget(login_password_input)
-            login_btn = QPushButton("Giriş Yap")
-            self.style_button(login_btn)
-            
-            def attempt_login():
-                self.logged_in_email = login_email_input.text().strip() or "test@gmail.com"
-                dialog.accept()
-            login_btn.clicked.connect(attempt_login)
-            login_form.addWidget(login_btn)
-
-            forgot_btn = QPushButton("Şifremi Unuttum")
-            self.style_button(forgot_btn, color="#e67e22")
-            forgot_btn.clicked.connect(lambda: QMessageBox.information(self, "Şifre", "Şifre sıfırlama UI Mock"))
-            login_form.addWidget(forgot_btn)
-
-            # Registration Form
-            reg_email_input = QLineEdit()
-            reg_email_input.setPlaceholderText("Email adresinizi girin")
-            reg_password_input = QLineEdit()
-            reg_password_input.setPlaceholderText("Şifre")
-            reg_password_input.setEchoMode(QLineEdit.Password)
-            reg_fname_input = QLineEdit()
-            reg_fname_input.setPlaceholderText("Adınızı girin")
-            reg_form.addWidget(QLabel("Email:"))
-            reg_form.addWidget(reg_email_input)
-            reg_form.addWidget(QLabel("Şifre:"))
-            reg_form.addWidget(reg_password_input)
-            reg_form.addWidget(QLabel("Ad:"))
-            reg_form.addWidget(reg_fname_input)
-            
-            reg_btn = QPushButton("Kayıt Ol")
-            self.style_button(reg_btn)
-            def attempt_register():
-                self.logged_in_email = reg_email_input.text().strip() or "newuser@gmail.com"
-                dialog.accept()
-            reg_btn.clicked.connect(attempt_register)
-            reg_form.addWidget(reg_btn)
-
-            layout.addWidget(login_widget)
-            layout.addWidget(reg_widget)
-
-            login_select_btn.clicked.connect(lambda: (login_widget.setVisible(True), reg_widget.setVisible(False)))
-            register_select_btn.clicked.connect(lambda: (login_widget.setVisible(False), reg_widget.setVisible(True)))
-
-            dialog.setLayout(layout)
-            dialog.exec_()
 
     def init_ui(self):
         if self.layout_yuklendi: return
