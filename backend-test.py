@@ -14,7 +14,7 @@ messages = [
 ]
 
 print("-" * 50)
-print("🤖 FoxAI is ready! Type 'quit' or 'exit' to stop.")
+print("FoxAI is ready! Type '/quit' or '/exit' to stop.")
 print("-" * 50)
 
 # The Interactive Chat Loop
@@ -23,8 +23,8 @@ while True:
     user_input = input("\nYou: ")
     
     # Check if you want to exit the script
-    if user_input.lower() in ['quit', 'exit', 'q']:
-        print("Shutting down FoxAI. Goodbye!")
+    if user_input.lower() in ['/quit', '/exit', '/q']:
+        print("Shutting down...")
         break
         
     # If the user just pressed Enter without typing anything, skip
