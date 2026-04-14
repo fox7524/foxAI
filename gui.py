@@ -1,31 +1,34 @@
 import sys
 import os
+import time
+import psutil
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QTextEdit,
-    QLineEdit, QPushButton, QHBoxLayout, QLabel, QSplitter,
-    QDialog, QFormLayout, QMessageBox, QRadioButton,
-    QButtonGroup, QStackedWidget, QMenu, QInputDialog,
-    QSplashScreen, QProgressBar, QFrame, QListWidget, QFileDialog
+    QApplication, QWidget, QVBoxLayout, QTextEdit, QLineEdit, 
+    QPushButton, QHBoxLayout, QLabel, QSplitter, QDialog, 
+    QFormLayout, QMessageBox, QRadioButton, QButtonGroup, 
+    QStackedWidget, QListWidget, QFrame, QScrollArea, QFileDialog
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtGui import QFont
+
 from mlx_lm import load, generate
 
-# Import our new engines
 try:
     from rag_engine import RAGEngine
     from finetune_engine import FinetuneEngine
 except ImportError:
-    pass # Wait to instantiate or mock if missing
+    pass
 
-VERSION = "Thunderbird AI Volume Alpha - DEV Edition"
+VERSION = "FoxAI - Studio Edition"
 
 # ---------------------------------------------------------
-# WORKER THREADS
+# WORKERS
 # ---------------------------------------------------------
-
 class AIWorker(QThread):
-    finished = pyqtSignal(str)
+    """Handles text generation and calculates performance metrics."""
+    # signal returns: (response_text, tok_per_sec, total_tokens, time_elapsed)
+    finished = pyqtSignal(str, float, int, float)
+    error = pyqtSignal(str)
 
     def __init__(self, model, tokenizer, prompt):
         super().__init__()
@@ -35,466 +38,356 @@ class AIWorker(QThread):
 
     def run(self):
         try:
+            start_time = time.time()
             response = generate(self.model, self.tokenizer, prompt=self.prompt, max_tokens=1500)
-            self.finished.emit(response)
+            end_time = time.time()
+            
+            elapsed = end_time - start_time
+            # Rough token count metric via tokenizer length
+            token_count = len(self.tokenizer.encode(response)) if hasattr(self.tokenizer, 'encode') else len(response.split())
+            tok_per_sec = token_count / elapsed if elapsed > 0 else 0.0
+
+            self.finished.emit(response, tok_per_sec, token_count, elapsed)
         except Exception as e:
-            self.finished.emit(f"Error generating response: {str(e)}")
+            self.error.emit(f"Error generating response: {str(e)}")
 
-class TaskWorker(QThread):
-    """Generic worker for background tasks like RAG Ingestion or data prep"""
-    log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal()
-
-    def __init__(self, task_func, *args, **kwargs):
-        super().__init__()
-        self.task_func = task_func
-        self.args = args
-        self.kwargs = kwargs
-
+class MemoryMonitor(QThread):
+    update_signal = pyqtSignal(str, str) # ram_gb, ram_percent
+    
     def run(self):
-        try:
-            self.task_func(*self.args, **self.kwargs)
-        except Exception as e:
-            self.log_signal.emit(f"Error during task: {str(e)}")
-        finally:
-            self.finished_signal.emit()
+        process = psutil.Process(os.getpid())
+        while True:
+            try:
+                # App memory usage
+                mem_info = process.memory_info()
+                used_gb = mem_info.rss / (1024 ** 3)
+                
+                # System overall RAM percentage
+                sys_mem = psutil.virtual_memory()
+                sys_percent = sys_mem.percent
+                
+                self.update_signal.emit(f"{used_gb:.2f} GB", f"{sys_percent}%")
+            except:
+                pass
+            time.sleep(2)
 
 # ---------------------------------------------------------
-# MAIN UI CLASS
+# SETTINGS & ROADMAP VIEWER
+# ---------------------------------------------------------
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None, current_prompt="", current_theme="dark"):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setFixedSize(500, 450)
+        self.setStyleSheet("background-color: #2c2c2c; color: white;")
+        
+        self.final_prompt = current_prompt
+        self.final_theme = current_theme
+        
+        layout = QVBoxLayout(self)
+        
+        layout.addWidget(QLabel("<b>System / Personality Prompt:</b>"))
+        self.prompt_edit = QTextEdit()
+        self.prompt_edit.setPlainText(current_prompt)
+        self.prompt_edit.setStyleSheet("background-color: #1e1e1e; border: 1px solid #444; padding: 5px;")
+        layout.addWidget(self.prompt_edit)
+        
+        layout.addWidget(QLabel("<b>Theme Setup (Mock):</b>"))
+        theme_layout = QHBoxLayout()
+        self.rb_dark = QRadioButton("Dark Theme (Studio)")
+        self.rb_light = QRadioButton("Light ")
+        
+        if current_theme == "dark": self.rb_dark.setChecked(True)
+        else: self.rb_light.setChecked(True)
+            
+        theme_layout.addWidget(self.rb_dark)
+        theme_layout.addWidget(self.rb_light)
+        theme_layout.addStretch()
+        layout.addLayout(theme_layout)
+        
+        layout.addSpacing(20)
+        layout.addWidget(QLabel("<b>Roadmap & Architecture References:</b>"))
+        roadmap_btn = QPushButton("View Original Roadmap Tabs")
+        roadmap_btn.setStyleSheet("background-color: #3f51b5; padding: 8px; border-radius: 4px; font-weight: bold;")
+        roadmap_btn.clicked.connect(self.show_mock_roadmap)
+        layout.addWidget(roadmap_btn)
+        
+        layout.addStretch()
+        
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton("Save & Apply")
+        save_btn.setStyleSheet("background-color: #2ecc71; padding: 8px; border-radius: 4px; font-weight: bold;")
+        save_btn.clicked.connect(self.accept_settings)
+        btn_layout.addStretch()
+        btn_layout.addWidget(save_btn)
+        layout.addLayout(btn_layout)
+
+    def accept_settings(self):
+        self.final_prompt = self.prompt_edit.toPlainText()
+        self.final_theme = "dark" if self.rb_dark.isChecked() else "light"
+        self.accept()
+
+    def show_mock_roadmap(self):
+        QMessageBox.information(self, "Roadmap Specs", "Phase 1: Ask Before Acting (Ahmet trains 50 pairs)\nPhase 2: RAG / Finetuning Core\nPhase 3: GUI Dev\nPhase 4: Optimization")
+
+# ---------------------------------------------------------
+# MAIN UI
 # ---------------------------------------------------------
 class ChatbotGUI(QWidget):
     def __init__(self, model, tokenizer, model_path):
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
-        self.model_path = model_path
         
-        # Initialize Engines
+        # Engines
         try:
             self.rag_engine = RAGEngine()
         except:
             self.rag_engine = None
-        self.finetune_engine = FinetuneEngine(self.model_path)
         
-        self.rag_enabled = True # Toggle for using RAG context
-
-        self.system_instruction = "You are a highly intelligent and helpful Assistant named FoxAI developed by Kayra and Ahmet. You answer questions concisely and accurately."
-        self.messages = [{"role": "system", "content": self.system_instruction}]
+        self.system_prompt = "You are FoxAI, a local assistant."
         
-        self.selected_files = [] # Files chosen in dev mode
-
+        # Chat Sessions Storage Mock
+        self.chats = {"Default Chat": [{"role": "system", "content": self.system_prompt}]}
+        self.active_chat = "Default Chat"
+        
         self.init_ui()
+        
+        # Start HW Monitor
+        self.mem_thread = MemoryMonitor()
+        self.mem_thread.update_signal.connect(self.update_hw_stats)
+        self.mem_thread.start()
 
     def init_ui(self):
         self.setWindowTitle(VERSION)
-        self.setGeometry(100, 100, 1000, 650)
-        
+        self.setGeometry(100, 100, 1100, 750)
         self.setStyleSheet("""
-            QWidget {
-                background-color: #f5f5f5;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            }
+            QWidget { background-color: #1a1a1a; color: #d4d4d4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto; }
         """)
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ---------------- SIDEBAR ----------------
+        # ---------------- LEFT SIDEBAR (CHATS) ----------------
         sidebar = QFrame()
-        sidebar.setStyleSheet("""
-            QFrame {
-                background-color: #2c3e50;
-                border-radius: 0px;
-                padding: 20px;
-            }
-            QLabel { color: #ecf0f1; }
-        """)
-        sidebar.setFixedWidth(240)
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setSpacing(15)
-
-        logo = QLabel("FoxAI")
-        logo.setFont(QFont("SF Pro Display", 22, QFont.Bold))
-        sidebar_layout.addWidget(logo, alignment=Qt.AlignTop | Qt.AlignHCenter)
-
-        # Navigation Buttons
-        self.btn_chat_mode = QPushButton("💬 Chat Mode")
-        self.btn_dev_mode = QPushButton("⚙️ Developer Mode")
+        sidebar.setFixedWidth(260)
+        sidebar.setStyleSheet("background-color: #242424; border-right: 1px solid #333;")
+        s_layout = QVBoxLayout(sidebar)
         
-        for btn in [self.btn_chat_mode, self.btn_dev_mode]:
-            self.style_nav_button(btn)
-            sidebar_layout.addWidget(btn)
-
-        sidebar_layout.addStretch()
-
-        self.exit_button = QPushButton("🚪 Exit")
-        self.style_nav_button(self.exit_button, hover_color="#c0392b")
-        self.exit_button.clicked.connect(self.close)
-        sidebar_layout.addWidget(self.exit_button)
-
-        # ---------------- MAIN CONTENT AREA ----------------
-        self.stack = QStackedWidget()
-        
-        # 1. Chat Page
-        self.chat_page = QWidget()
-        self.setup_chat_page()
-        self.stack.addWidget(self.chat_page)
-
-        # 2. Dev Page
-        self.dev_page = QWidget()
-        self.setup_dev_page()
-        self.stack.addWidget(self.dev_page)
-
-        main_layout.addWidget(sidebar)
-        main_layout.addWidget(self.stack)
-
-        # Connections
-        self.btn_chat_mode.clicked.connect(lambda: self.stack.setCurrentIndex(0))
-        self.btn_dev_mode.clicked.connect(lambda: self.stack.setCurrentIndex(1))
-
-    def style_nav_button(self, button, hover_color="#34495e"):
-        button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: #ecf0f1;
-                border: none;
-                border-radius: 8px;
-                padding: 12px;
-                font-size: 16px;
-                font-weight: bold;
-                text-align: left;
-            }}
-            QPushButton:hover {{
-                background-color: {hover_color};
-            }}
-        """)
-
-    def style_action_button(self, button, bg_color="#3498db"):
-        button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {bg_color};
-                color: white;
-                border-radius: 6px;
-                padding: 10px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {bg_color}aa;
-            }}
-        """)
-
-    # ---------------- CHAT PAGE ----------------
-    def setup_chat_page(self):
-        layout = QVBoxLayout(self.chat_page)
-        
-        chat_area = QFrame()
-        chat_area.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border-radius: 12px;
-            }
-        """)
-        chat_layout = QVBoxLayout(chat_area)
-        
-        # Top bar in chat
+        # Header
         top_bar = QHBoxLayout()
-        header = QLabel("Chat Dashboard")
-        header.setFont(QFont("Arial", 16, QFont.Bold))
-        header.setStyleSheet("color: #2c3e50;")
+        logo = QLabel("👾 Chats")
+        logo.setFont(QFont("Arial", 14, QFont.Bold))
+        new_chat_btn = QPushButton("📝")
+        new_chat_btn.setFixedSize(30, 30)
+        new_chat_btn.setStyleSheet("border: none; background: transparent; font-size: 16px;")
+        new_chat_btn.clicked.connect(self.new_chat)
         
-        self.status_lbl = QLabel("")
-        
-        top_bar.addWidget(header)
+        top_bar.addWidget(logo)
         top_bar.addStretch()
-        top_bar.addWidget(self.status_lbl)
+        top_bar.addWidget(new_chat_btn)
+        s_layout.addLayout(top_bar)
         
-        chat_layout.addLayout(top_bar)
+        # Search
+        search_bar = QLineEdit()
+        search_bar.setPlaceholderText("Search chats...")
+        search_bar.setStyleSheet("background-color: #1e1e1e; border: 1px solid #444; border-radius: 4px; padding: 6px;")
+        s_layout.addWidget(search_bar)
+        
+        # Session List
+        self.chat_list = QListWidget()
+        self.chat_list.setStyleSheet("""
+            QListWidget { background: transparent; border: none; }
+            QListWidget::item { padding: 10px; border-radius: 6px; }
+            QListWidget::item:selected { background-color: #3b3b3b; color: white; }
+        """)
+        self.chat_list.addItem(self.active_chat)
+        self.chat_list.itemClicked.connect(self.switch_chat)
+        s_layout.addWidget(self.chat_list)
+        
+        s_layout.addStretch()
+        
+        # Hardware Status Bottom
+        hw_layout = QHBoxLayout()
+        self.lbl_ram_raw = QLabel("💾 0 GB")
+        self.lbl_ram_raw.setStyleSheet("font-size: 11px; color: #888; background: #1e1e1e; padding: 4px; border-radius:4px;")
+        self.lbl_ram_pct = QLabel("⚙ 0.0%")
+        self.lbl_ram_pct.setStyleSheet("font-size: 11px; color: #888; background: #1e1e1e; padding: 4px; border-radius:4px;")
+        
+        settings_btn = QPushButton("⚙")
+        settings_btn.setStyleSheet("background: transparent; color: #888; border: none; font-size: 16px;")
+        settings_btn.clicked.connect(self.open_settings)
+        
+        hw_layout.addWidget(settings_btn)
+        hw_layout.addStretch()
+        hw_layout.addWidget(self.lbl_ram_raw)
+        hw_layout.addWidget(self.lbl_ram_pct)
+        s_layout.addLayout(hw_layout)
 
+        # ---------------- RIGHT MAIN AREA ----------------
+        main_area = QFrame()
+        m_layout = QVBoxLayout(main_area)
+        
+        # Header Info
+        header_area = QHBoxLayout()
+        self.model_lbl = QLabel("🤖 <b>Active Model:</b> mlx_lm.load() Weights | FoxAI Core")
+        self.model_lbl.setAlignment(Qt.AlignCenter)
+        self.model_lbl.setStyleSheet("background-color: #2a2a2a; padding: 8px; border-radius: 6px; color: #bbb;")
+        header_area.addStretch()
+        header_area.addWidget(self.model_lbl)
+        header_area.addStretch()
+        m_layout.addLayout(header_area)
+        
         self.chat_display = QTextEdit()
         self.chat_display.setReadOnly(True)
         self.chat_display.setStyleSheet("""
             QTextEdit {
-                background-color: #fafafa;
-                border: 1px solid #e0e0e0;
-                border-radius: 12px;
-                padding: 15px;
-                font-size: 14px;
+                background-color: #1a1a1a;
+                border: none;
+                font-size: 15px;
+                padding: 20px;
+                line-height: 1.5;
             }
         """)
-        chat_layout.addWidget(self.chat_display)
-
-        # Input Area
-        input_frame = QFrame()
-        input_frame.setStyleSheet("QFrame { background-color: #ffffff; }")
-        input_layout = QHBoxLayout(input_frame)
-        input_layout.setContentsMargins(0,0,0,0)
-
-        self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText("Type a message...")
-        self.input_field.setStyleSheet("""
-            QLineEdit {
-                border: 2px solid #e0e0e0;
-                border-radius: 20px;
-                padding: 10px 15px;
-                font-size: 14px;
-            }
-            QLineEdit:focus {
-                border: 2px solid #3498db;
-            }
-        """)
-        self.input_field.returnPressed.connect(self.soru_sor)
+        m_layout.addWidget(self.chat_display)
         
-        send_btn = QPushButton("Send")
-        send_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2ecc71;
-                color: white;
-                border-radius: 20px;
-                padding: 10px 20px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #27ae60; }
-        """)
+        # Input Area Wrapper
+        input_container = QFrame()
+        input_container.setStyleSheet("background-color: #1e1e1e; border: 1px solid #333; border-radius: 12px; margin: 10px 40px;")
+        ic_layout = QVBoxLayout(input_container)
+        
+        self.input_field = QLineEdit()
+        self.input_field.setPlaceholderText("Send a message to the model...")
+        self.input_field.setStyleSheet("background: transparent; border: none; font-size: 14px; padding: 5px;")
+        self.input_field.returnPressed.connect(self.soru_sor)
+        ic_layout.addWidget(self.input_field)
+        
+        btm_input_bar = QHBoxLayout()
+        # Mock buttons for Dev Panel / Tools
+        btn_dev = QPushButton("🔧 RAG / Train Tools")
+        btn_dev.setStyleSheet("background-color: #2b3b55; color: #a4c2f4; border-radius: 6px; padding: 4px 8px; font-size: 12px;")
+        btn_dev.clicked.connect(lambda: QMessageBox.information(self, "Dev Panel", "Opens RAG/Fine-tune manager!"))
+        
+        send_btn = QPushButton("↑")
+        send_btn.setFixedSize(28, 28)
+        send_btn.setStyleSheet("background-color: #444; color: white; border-radius: 14px; font-weight: bold;")
         send_btn.clicked.connect(self.soru_sor)
+        
+        btm_input_bar.addWidget(btn_dev)
+        btm_input_bar.addStretch()
+        btm_input_bar.addWidget(send_btn)
+        ic_layout.addLayout(btm_input_bar)
 
-        input_layout.addWidget(self.input_field)
-        input_layout.addWidget(send_btn)
+        m_layout.addWidget(input_container)
 
-        chat_layout.addWidget(input_frame)
-        layout.addWidget(chat_area)
+        # Assemble
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(sidebar)
+        splitter.addWidget(main_area)
+        splitter.setSizes([260, 840])
+        main_layout.addWidget(splitter)
+
+    def update_hw_stats(self, ram_gb, ram_pct):
+        self.lbl_ram_raw.setText(f"💾 {ram_gb}")
+        self.lbl_ram_pct.setText(f"⚙ {ram_pct}")
+
+    def open_settings(self):
+        diag = SettingsDialog(self, self.system_prompt)
+        if diag.exec_():
+            self.system_prompt = diag.final_prompt
+            # Update history of active chat to adhere to new prompt
+            if self.chats[self.active_chat] and self.chats[self.active_chat][0]["role"] == "system":
+                self.chats[self.active_chat][0]["content"] = self.system_prompt
+
+    def new_chat(self):
+        title, ok = QInputDialog.getText(self, "New Chat", "Chat Name:")
+        if ok and title:
+            self.chats[title] = [{"role": "system", "content": self.system_prompt}]
+            self.chat_list.addItem(title)
+            self.chat_list.setCurrentRow(self.chat_list.count()-1)
+            self.switch_chat(self.chat_list.currentItem())
+
+    def switch_chat(self, item):
+        self.active_chat = item.text()
+        self.chat_display.clear()
+        
+        # Redraw history visually
+        for msg in self.chats[self.active_chat]:
+            if msg["role"] == "user":
+                self.chat_display.append(f"<div style='margin-bottom: 10px; color: #ececec; font-size: 16px;'><b>You</b><br><span style='color: #a0a0a0;'>{msg['content']}</span></div>")
+            elif msg["role"] == "assistant":
+                self.chat_display.append(f"<div style='margin-bottom: 10px; color: #ececec; font-size: 16px;'><b>FoxAI</b><br>{msg['content'].replace(chr(10), '<br>')}</div><br>")
+        self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
 
     def soru_sor(self):
         user_text = self.input_field.text().strip()
         if not user_text: return
-        
         self.input_field.clear()
+        
+        # Display user bubble
+        self.chat_display.append(f"<div style='margin-bottom: 10px; color: #ececec; font-size: 16px;'><b>You</b><br><span style='color: #a0a0a0;'>{user_text}</span></div>")
+        
+        # History appends
+        self.chats[self.active_chat].append({"role": "user", "content": user_text})
+        
+        # Context formulation
+        context_prompt = user_text
+        if self.rag_engine and self.rag_engine.enabled:
+            rag_docs = self.rag_engine.query(user_text)
+            if rag_docs:
+                context_prompt = f"Background info:\n{rag_docs}\n\nUser: {user_text}"
+                
+        temp_history = list(self.chats[self.active_chat])
+        temp_history[-1] = {"role": "user", "content": context_prompt}
+        
+        try:
+            # We mock the prompt string since it handles the backend logic cleanly 
+            if hasattr(self.tokenizer, 'apply_chat_template'):
+                prompt_string = self.tokenizer.apply_chat_template(temp_history, tokenize=False, add_generation_prompt=True)
+            else: prompt_string = f"User: {context_prompt}\nAssistant: "
+        except:
+            prompt_string = f"User: {context_prompt}\nAssistant: "
+
         self.input_field.setDisabled(True)
-        self.chat_display.append(f"<div style='margin: 5px 0;'><b style='color:#3498db;'>You:</b> {user_text}</div>")
-        
-        # Handle RAG Context insertion temporarily into the prompt
-        rag_context = ""
-        if self.rag_enabled and self.rag_engine and self.rag_engine.enabled:
-            self.status_lbl.setText("<i>Searching knowledge base...</i>")
-            rag_context = self.rag_engine.query(user_text)
-
-        # Build messages for this specific prompt
-        temp_messages = list(self.messages)
-        
-        augmented_prompt = user_text
-        if rag_context:
-            augmented_prompt = f"Using the following retrieved context, answer the user's question.\n\nContext: {rag_context}\n\nQuestion: {user_text}"
-            self.chat_display.append("<br><i><small style='color:gray;'>* Context retrieved from RAG db.</small></i>")
-
-        temp_messages.append({"role": "user", "content": augmented_prompt})
-        
-        # Add to actual history without the massive context
-        self.messages.append({"role": "user", "content": user_text})
-        
-        self.status_lbl.setText("<i>Thinking...</i>")
-        
-        prompt = self.tokenizer.apply_chat_template(temp_messages, tokenize=False, add_generation_prompt=True)
-        
-        self.worker = AIWorker(self.model, self.tokenizer, prompt)
-        self.worker.finished.connect(self.on_ai_response)
+        self.worker = AIWorker(self.model, self.tokenizer, prompt_string)
+        self.worker.finished.connect(self.on_ai_success)
+        self.worker.error.connect(self.on_ai_error)
         self.worker.start()
 
-    def on_ai_response(self, response):
-        self.messages.append({"role": "assistant", "content": response})
+    def on_ai_success(self, response, tps, tokens, ms):
+        self.chats[self.active_chat].append({"role": "assistant", "content": response})
         formatted = response.replace('\n', '<br>')
-        self.chat_display.append(f"<div style='margin: 5px 0; background:#f0f3f4; padding:10px; border-radius:8px;'><b style='color:#e67e22;'>FoxAI:</b><br>{formatted}</div>")
-        self.chat_display.append("<br>")
+        
+        # Display response
+        self.chat_display.append(f"<div style='color: #ececec; font-size: 16px;'><b>FoxAI</b><br>{formatted}</div>")
+        
+        # Display LM-studio style metadata
+        meta_html = f"""
+        <div style='background-color: #242424; color: #888; font-size: 11px; padding: 5px; border-radius: 4px; display: inline-block; margin-top: 8px;'>
+            💡 <span>⏱ {tps:.2f} tok/sec</span> | <span>🧱 {tokens} tokens</span> | <span>🕒 {ms:.2f}s</span> | <b>Stop reason: EOS Token Found</b>
+        </div><br><br>
+        """
+        self.chat_display.append(meta_html)
         self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
         
-        self.status_lbl.setText("")
         self.input_field.setDisabled(False)
         self.input_field.setFocus()
 
-
-    # ---------------- DEV PAGE ----------------
-    def setup_dev_page(self):
-        layout = QHBoxLayout(self.dev_page)
-        
-        # Left Panel (Controls)
-        left_panel = QFrame()
-        left_panel.setStyleSheet("background-color: #ffffff; border-radius: 12px;")
-        l_layout = QVBoxLayout(left_panel)
-        
-        header = QLabel("AI Training & Data Console")
-        header.setFont(QFont("Arial", 16, QFont.Bold))
-        l_layout.addWidget(header)
-        
-        l_layout.addWidget(QLabel("1. Select Documents (PDF, DOCX, C++, PY, ZIM, etc.)"))
-        self.btn_select_files = QPushButton("Browse Files")
-        self.style_action_button(self.btn_select_files, "#8e44ad")
-        self.btn_select_files.clicked.connect(self.select_files)
-        l_layout.addWidget(self.btn_select_files)
-        
-        self.file_list = QListWidget()
-        self.file_list.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 4px;")
-        l_layout.addWidget(self.file_list)
-        
-        l_layout.addWidget(QLabel("2. RAG Upload (Vectorize Docs into ChromaDB)"))
-        self.btn_rag = QPushButton("Ingest to RAG")
-        self.style_action_button(self.btn_rag, "#27ae60")
-        self.btn_rag.clicked.connect(self.ingest_rag)
-        l_layout.addWidget(self.btn_rag)
-        
-        self.btn_clear_rag = QPushButton("Reset RAG Database")
-        self.style_action_button(self.btn_clear_rag, "#e74c3c")
-        self.btn_clear_rag.clicked.connect(self.reset_rag)
-        l_layout.addWidget(self.btn_clear_rag)
-        
-        l_layout.addSpacing(20)
-        
-        l_layout.addWidget(QLabel("3. Fine-Tune (Train Model with Files)"))
-        self.btn_finetune = QPushButton("Start LoRA Fine-Tuning")
-        self.style_action_button(self.btn_finetune, "#d35400")
-        self.btn_finetune.clicked.connect(self.start_finetuning)
-        l_layout.addWidget(self.btn_finetune)
-
-        # Right Panel (Console Output)
-        right_panel = QFrame()
-        right_panel.setStyleSheet("background-color: #1e1e1e; border-radius: 12px;")
-        r_layout = QVBoxLayout(right_panel)
-        
-        console_lbl = QLabel("Developer Console")
-        console_lbl.setStyleSheet("color: #00ff00; font-weight: bold;")
-        r_layout.addWidget(console_lbl)
-        
-        self.dev_console = QTextEdit()
-        self.dev_console.setReadOnly(True)
-        self.dev_console.setStyleSheet("background-color: #1e1e1e; color: #00ff00; border: none; font-family: monospace;")
-        r_layout.addWidget(self.dev_console)
-        
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_panel)
-        splitter.addWidget(right_panel)
-        
-        layout.addWidget(splitter)
-        
-    def log_dev(self, text):
-        self.dev_console.append(f"> {text}")
-        self.dev_console.verticalScrollBar().setValue(self.dev_console.verticalScrollBar().maximum())
-
-    def select_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Documents", "", "All Files (*);;PDFs (*.pdf);;Code (*.py *.cpp *.c);;Docs (*.docx *.txt)")
-        if files:
-            for f in files:
-                if f not in self.selected_files:
-                    self.selected_files.append(f)
-                    self.file_list.addItem(os.path.basename(f))
-            self.log_dev(f"Selected {len(files)} new files.")
-
-    def ingest_rag(self):
-        if not self.selected_files:
-            self.log_dev("ERROR: No files selected.")
-            return
-        if not self.rag_engine or not self.rag_engine.enabled:
-            self.log_dev("ERROR: RAG Engine not initialized. Missing dependencies?")
-            return
-            
-        self.log_dev("Starting RAG ingestion in background...")
-        self.btn_rag.setDisabled(True)
-        
-        def run_ingest():
-            success = self.rag_engine.ingest_documents(self.selected_files)
-            if success:
-                self.tworker.log_signal.emit("RAG Ingestion completed successfully.")
-            else:
-                self.tworker.log_signal.emit("RAG Ingestion encountered errors or yielded no data.")
-
-        self.tworker = TaskWorker(run_ingest)
-        self.tworker.log_signal.connect(self.log_dev)
-        self.tworker.finished_signal.connect(lambda: self.btn_rag.setDisabled(False))
-        self.tworker.start()
-
-    def reset_rag(self):
-        if self.rag_engine:
-            self.rag_engine.reset_database()
-            self.log_dev("RAG Database has been totally reset.")
-
-    def start_finetuning(self):
-        if not self.selected_files:
-            self.log_dev("ERROR: No files selected to train on.")
-            return
-        
-        self.log_dev("Starting background data preparation for Fine-Tuning...")
-        self.btn_finetune.setDisabled(True)
-
-        def run_ft():
-            # Mock extraction, ideally we use generic loaders from rag_engine
-            # to extract text out of the files.
-            chunks = []
-            if self.rag_engine and self.rag_engine.enabled:
-                for f in self.selected_files:
-                    try:
-                        self.tworker.log_signal.emit(f"Extracting text from {f}")
-                        docs = self.rag_engine.process_file(f)
-                        chunks.extend([d.page_content for d in docs])
-                    except:
-                        pass
-                        
-            if not chunks:
-                self.tworker.log_signal.emit("No valid text extracted to train on.")
-                return
-                
-            train_p, valid_p = self.finetune_engine.prepare_dataset(chunks)
-            self.tworker.log_signal.emit(f"Dataset generated at {train_p} and {valid_p}")
-            self.tworker.log_signal.emit("Launching subprocess for mlx_lm.lora...")
-            
-            # This starts the subprocess. In a real desktop app we'd attach a QProcess 
-            # to continuously read stdout, but for now we note it launched.
-            proc = self.finetune_engine.start_training()
-            self.tworker.log_signal.emit(f"Fine-Tuning started with PID {proc.pid}. Watch terminal for details.")
-            
-        self.tworker = TaskWorker(run_ft)
-        self.tworker.log_signal.connect(self.log_dev)
-        self.tworker.finished_signal.connect(lambda: self.btn_finetune.setDisabled(False))
-        self.tworker.start()
-
-
-# ---------------------------------------------------------
-# ENTRY POINT
-# ---------------------------------------------------------
+    def on_ai_error(self, err_msg):
+        self.chat_display.append(f"<div style='color: #ff5555; '><b>Error:</b> {err_msg}</div><br>")
+        self.input_field.setDisabled(False)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     
-    # Simple splash
-    splash = QSplashScreen()
-    splash.setFixedSize(400, 200)
-    splash.setWindowFlags(Qt.FramelessWindowHint)   
-    splash.setStyleSheet("background-color: #2c3e50; color: white;")
-    
-    layout = QVBoxLayout(splash)
-    v_lbl = QLabel(VERSION)
-    v_lbl.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-    v_lbl.setStyleSheet("font-size: 16pt; font-weight: bold;")
-    layout.addWidget(v_lbl)
-    
-    s_lbl = QLabel("Loading ML Model (this takes a moment)...")
-    s_lbl.setAlignment(Qt.AlignCenter)
-    layout.addWidget(s_lbl)
-    
-    splash.setLayout(layout)
-    splash.show()
-    app.processEvents()
-
-    model_path = "/Users/fox/.lmstudio/models/Jackrong/MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-6bit"
-    
+    # Simple ML extraction boot
     try:
+        model_path = "/Users/fox/.lmstudio/models/Jackrong/MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-6bit"
         model, tokenizer = load(model_path)
-    except Exception as e:
-        print(f"Failed to load model: {e}")
-        # Make mock for UI testing if user doesn't have model running currently
-        class MockObj:
-            def apply_chat_template(self, *args, **kwargs): return ""
-        model, tokenizer = None, MockObj()
-
-    splash.close()
-    
-    window = ChatbotGUI(model, tokenizer, model_path)
+    except:
+        model, tokenizer = None, None
+        
+    window = ChatbotGUI(model, tokenizer, "")
     window.show()
-    
     sys.exit(app.exec_())
