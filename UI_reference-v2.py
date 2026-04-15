@@ -10,7 +10,7 @@ class ElegantChatApp(QWidget):
         super().__init__()
         self.initUI()
         
-    def initUI(self):
+    def initUI(self):  
         # Main window configuration
         self.setWindowTitle("Thunderbird AI - Elegant UI")
         self.setWindowFlags(Qt.FramelessWindowHint)
