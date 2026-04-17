@@ -1,0 +1,1028 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kayra & Ahmet — AI Project Roadmap</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#0a0a0f;--bg2:#111118;--bg3:#18181f;--bg4:#1e1e28;
+  --border:#2a2a35;--border2:#35354a;
+  --text:#e8e8f0;--muted:#7070a0;--muted2:#4a4a6a;
+  --kayra:#4d9fff;--kayra-dim:#1a3a5c;--kayra-glow:rgba(77,159,255,.12);
+  --ahmet:#ff7c4d;--ahmet-dim:#5c2a1a;--ahmet-glow:rgba(255,124,77,.12);
+  --green:#4dff9f;--green-dim:#1a5c3a;
+  --amber:#ffd04d;--red:#ff4d6a;--purple:#b04dff;
+  --mono:'JetBrains Mono',monospace;--sans:'Syne',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;overflow-x:hidden;}
+body::before{content:'';position:fixed;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");pointer-events:none;z-index:0;opacity:.5;}
+.wrap{max-width:1080px;margin:0 auto;padding:2rem 1.5rem;position:relative;z-index:1;}
+
+/* header */
+header{margin-bottom:3rem;}
+.header-top{display:flex;align-items:flex-start;justify-content:space-between;gap:2rem;flex-wrap:wrap;margin-bottom:1.5rem;}
+.project-title{font-size:2.4rem;font-weight:800;line-height:1;letter-spacing:-1px;}
+.project-title span{color:var(--muted);}
+.project-sub{font-size:.85rem;color:var(--muted);font-family:var(--mono);margin-top:.5rem;}
+.header-actions{display:flex;gap:8px;align-items:center;flex-shrink:0;}
+
+/* buttons */
+.btn{font-family:var(--mono);font-size:.75rem;font-weight:500;padding:8px 14px;border-radius:6px;border:1px solid var(--border2);background:var(--bg3);color:var(--text);cursor:pointer;transition:all .15s;}
+.btn:hover{border-color:var(--muted2);background:var(--bg2);}
+.btn-export{border-color:var(--green-dim);color:var(--green);}
+.btn-export:hover{background:var(--green-dim);}
+.btn-import{border-color:var(--kayra-dim);color:var(--kayra);}
+.btn-import:hover{background:var(--kayra-dim);}
+.btn-reset{border-color:#5c1a2a;color:var(--red);}
+.btn-reset:hover{background:#5c1a2a;}
+.btn-apikey{border-color:rgba(176,77,255,.3);color:var(--purple);}
+.btn-apikey:hover{background:rgba(176,77,255,.15);}
+
+/* stats */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:1.5rem;}
+.sc{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px 16px;}
+.sl{font-family:var(--mono);font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;}
+.sv{font-size:1.3rem;font-weight:700;}
+.sn{font-family:var(--mono);font-size:.65rem;color:var(--muted);margin-top:2px;}
+
+/* progress */
+.overall-progress{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin-bottom:1.5rem;}
+.op-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
+.op-title{font-family:var(--mono);font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;}
+.op-pct{font-family:var(--mono);font-size:.85rem;font-weight:700;}
+.progress-bars{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.pbar-label{display:flex;justify-content:space-between;font-family:var(--mono);font-size:.7rem;margin-bottom:5px;}
+.pbar-track{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;}
+.pbar-fill{height:100%;border-radius:2px;transition:width .4s ease;}
+.fill-k{background:var(--kayra);}.fill-a{background:var(--ahmet);}
+
+/* machine cards */
+.machines{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1.5rem;}
+.mcard{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;display:flex;gap:12px;}
+.mcard-avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.8rem;flex-shrink:0;font-family:var(--mono);}
+.av-k{background:var(--kayra-dim);color:var(--kayra);}.av-a{background:var(--ahmet-dim);color:var(--ahmet);}
+.mcard-name{font-weight:700;font-size:.95rem;}
+.mcard-spec{font-family:var(--mono);font-size:.7rem;color:var(--muted);margin-top:2px;}
+.mcard-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;}
+.tag{font-family:var(--mono);font-size:.6rem;padding:2px 7px;border-radius:4px;}
+.tag-k{background:var(--kayra-dim);color:var(--kayra);}
+.tag-a{background:var(--ahmet-dim);color:var(--ahmet);}
+.tag-no{background:rgba(255,76,106,.15);color:var(--red);}
+
+/* phase tabs */
+.phase-tabs{display:flex;gap:6px;margin-bottom:1.25rem;flex-wrap:wrap;}
+.ptab{font-family:var(--mono);font-size:.72rem;font-weight:500;padding:8px 14px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--muted);cursor:pointer;transition:all .15s;display:flex;flex-direction:column;align-items:flex-start;gap:2px;}
+.ptab:hover{border-color:var(--border2);color:var(--text);}
+.ptab-name{font-size:.72rem;font-weight:700;}
+.ptab-date{font-size:.6rem;opacity:.7;}
+.ptab-prog{font-size:.6rem;}
+.ptab.p1.active{border-color:#5a5a8a;background:rgba(90,90,138,.1);color:var(--text);}
+.ptab.p2.active{border-color:var(--kayra-dim);background:var(--kayra-glow);color:var(--text);}
+.ptab.p3.active{border-color:var(--green-dim);background:rgba(77,255,159,.06);color:var(--text);}
+.ptab.p4.active{border-color:rgba(255,76,106,.3);background:rgba(255,76,106,.06);color:var(--text);}
+
+/* phase panels */
+.phase-panel{display:none;}.phase-panel.active{display:block;}
+.phase-header{background:var(--bg2);border:1px solid var(--border);border-radius:12px 12px 0 0;padding:16px 20px;border-bottom:none;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.ph-title{font-size:1.3rem;font-weight:800;}
+.ph-sub{font-size:.8rem;color:var(--muted);margin-top:4px;font-family:var(--mono);line-height:1.5;}
+.hw-chip{font-family:var(--mono);font-size:.65rem;font-weight:700;padding:5px 10px;border-radius:6px;flex-shrink:0;margin-top:2px;}
+.hwm3{background:rgba(90,90,138,.2);color:#a0a0d0;border:1px solid rgba(90,90,138,.4);}
+.hwm5{background:var(--kayra-glow);color:var(--kayra);border:1px solid var(--kayra-dim);}
+.hwboth{background:rgba(176,77,255,.1);color:var(--purple);border:1px solid rgba(176,77,255,.3);}
+.phase-body{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--border);border-radius:0 0 12px 12px;overflow:hidden;}
+.dev-col{background:var(--bg2);}.dev-col:first-child{border-right:1px solid var(--border);}
+.dev-header{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--bg3);}
+.dev-avatar{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.75rem;flex-shrink:0;font-family:var(--mono);}
+.dev-name{font-weight:700;font-size:.9rem;}
+.dev-role{font-family:var(--mono);font-size:.65rem;color:var(--muted);}
+.dev-count{margin-left:auto;font-family:var(--mono);font-size:.65rem;padding:2px 8px;border-radius:4px;}
+.dc-k{background:var(--kayra-dim);color:var(--kayra);}.dc-a{background:var(--ahmet-dim);color:var(--ahmet);}
+.section-label{font-family:var(--mono);font-size:.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;padding:10px 18px 6px;}
+
+/* task items */
+.task-item{display:flex;align-items:flex-start;gap:10px;padding:10px 14px 10px 18px;border-bottom:1px solid var(--border);transition:background .15s;}
+.task-item:last-of-type{border-bottom:none;}
+.task-item:hover{background:rgba(255,255,255,.02);}
+.task-item.done{opacity:.5;}
+.task-item.done .task-text{text-decoration:line-through;text-decoration-color:var(--muted2);}
+.task-cb{width:16px;height:16px;border-radius:4px;border:1.5px solid var(--border2);flex-shrink:0;margin-top:2px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;background:transparent;}
+.task-item.kayra-task .task-cb{border-color:rgba(77,159,255,.4);}
+.task-item.ahmet-task .task-cb{border-color:rgba(255,124,77,.4);}
+.task-item.kayra-task.done .task-cb{background:var(--kayra);border-color:var(--kayra);}
+.task-item.ahmet-task.done .task-cb{background:var(--ahmet);border-color:var(--ahmet);}
+.cb-check{display:none;width:8px;height:8px;}
+.task-item.done .cb-check{display:block;}
+.cb-check path{stroke:var(--bg);stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;}
+.task-content{flex:1;min-width:0;cursor:pointer;}
+.task-text{font-size:.8rem;line-height:1.6;color:var(--text);}
+.task-text code{font-family:var(--mono);font-size:.72rem;background:var(--bg3);padding:1px 5px;border-radius:3px;color:var(--muted);}
+.task-date{font-family:var(--mono);font-size:.62rem;color:var(--muted2);margin-top:3px;display:flex;align-items:center;gap:6px;}
+.est-badge{padding:1px 6px;border-radius:3px;background:var(--bg3);border:1px solid var(--border);}
+
+/* HOW TO DO IT button */
+.htd-btn{flex-shrink:0;margin-top:1px;display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:.6rem;font-weight:600;padding:4px 9px;border-radius:5px;border:1px solid rgba(176,77,255,.3);color:var(--purple);background:rgba(176,77,255,.06);cursor:pointer;transition:all .15s;white-space:nowrap;}
+.htd-btn:hover{background:rgba(176,77,255,.15);border-color:rgba(176,77,255,.5);}
+.htd-btn svg{width:10px;height:10px;flex-shrink:0;}
+
+/* info boxes */
+.info-box{margin:0 18px 14px;padding:11px 13px;border-radius:8px;font-size:.78rem;line-height:1.6;}
+.info-box .ib-title{font-family:var(--mono);font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:7px;}
+.ib-item{display:flex;gap:6px;margin-bottom:3px;font-size:.77rem;}
+.ib-item::before{content:'→';flex-shrink:0;opacity:.6;}
+.ib-learn{background:rgba(77,255,159,.06);border:1px solid rgba(77,255,159,.15);color:#a0ffcc;}
+.ib-learn .ib-title{color:var(--green);}
+.ib-purple{background:rgba(176,77,255,.06);border:1px solid rgba(176,77,255,.2);color:#d4a0ff;}
+.ib-purple .ib-title{color:var(--purple);}
+.ib-warn{background:rgba(255,208,77,.06);border:1px solid rgba(255,208,77,.15);color:#ffe099;}
+.ib-warn .ib-title{color:var(--amber);}
+.ib-red{background:rgba(255,76,106,.06);border:1px solid rgba(255,76,106,.2);color:#ffaaaa;}
+.ib-red .ib-title{color:var(--red);}
+
+/* phase footer */
+.phase-footer{background:var(--bg2);border:1px solid var(--border);border-radius:12px;margin-top:12px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;}
+.chips-row{display:flex;flex-wrap:wrap;gap:5px;}
+.chip{font-family:var(--mono);font-size:.62rem;padding:2px 8px;border-radius:4px;border:1px solid var(--border);color:var(--muted);background:var(--bg3);}
+.goal-text{font-family:var(--mono);font-size:.72rem;font-weight:700;color:var(--text);max-width:300px;text-align:right;}
+
+/* banners */
+.alert{display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-radius:8px;font-size:.8rem;line-height:1.5;margin-bottom:10px;}
+.alert-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;margin-top:4px;}
+.alert-green{background:rgba(77,255,159,.06);border:1px solid rgba(77,255,159,.2);color:#a0ffcc;}
+.alert-green .alert-dot{background:var(--green);}
+.alert-amber{background:rgba(255,208,77,.06);border:1px solid rgba(255,208,77,.2);color:#ffe099;}
+.alert-amber .alert-dot{background:var(--amber);}
+.alert-red{background:rgba(255,76,106,.06);border:1px solid rgba(255,76,106,.2);color:#ffaaaa;}
+.alert-red .alert-dot{background:var(--red);}
+
+/* stack grid */
+.stack-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:1.5rem;}
+.sg{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:11px 14px;}
+.sg-label{font-family:var(--mono);font-size:.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;}
+.sg-val{font-size:.9rem;font-weight:700;}
+.sg-note{font-family:var(--mono);font-size:.65rem;color:var(--muted);margin-top:2px;}
+
+/* ═══════════════════════════════════════
+   CLAUDE CHAT MODAL
+═══════════════════════════════════════ */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:100;align-items:center;justify-content:center;padding:1rem;}
+.modal-overlay.open{display:flex;}
+
+/* API Key modal */
+.apikey-modal{background:var(--bg2);border:1px solid var(--border2);border-radius:14px;padding:28px;max-width:480px;width:100%;}
+.apikey-modal h3{font-size:1.1rem;font-weight:700;margin-bottom:8px;}
+.apikey-modal p{font-size:.8rem;color:var(--muted);margin-bottom:16px;line-height:1.6;font-family:var(--mono);}
+.apikey-modal input{width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-family:var(--mono);font-size:.8rem;padding:10px 12px;}
+.apikey-modal input:focus{outline:none;border-color:rgba(176,77,255,.5);}
+.apikey-note{font-size:.7rem;color:var(--muted2);margin-top:8px;font-family:var(--mono);}
+.modal-btns{display:flex;gap:8px;margin-top:16px;justify-content:flex-end;}
+
+/* Chat modal */
+.chat-modal{background:var(--bg2);border:1px solid var(--border2);border-radius:14px;width:100%;max-width:700px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;}
+.chat-modal-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:12px;flex-shrink:0;}
+.chat-modal-head-icon{width:36px;height:36px;border-radius:8px;background:rgba(176,77,255,.15);border:1px solid rgba(176,77,255,.3);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.chat-modal-head-icon svg{width:18px;height:18px;}
+.chat-task-label{font-size:.65rem;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px;}
+.chat-task-title{font-size:.9rem;font-weight:700;line-height:1.4;}
+.chat-close{margin-left:auto;width:30px;height:30px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0;transition:all .15s;}
+.chat-close:hover{background:var(--bg3);color:var(--text);}
+
+.chat-messages{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px;}
+.chat-messages::-webkit-scrollbar{width:4px;}
+.chat-messages::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+
+.msg{display:flex;gap:10px;align-items:flex-start;}
+.msg-avatar{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;flex-shrink:0;font-family:var(--mono);}
+.msg-claude{background:rgba(176,77,255,.15);color:var(--purple);border:1px solid rgba(176,77,255,.3);}
+.msg-user-k{background:var(--kayra-dim);color:var(--kayra);}
+.msg-user-a{background:var(--ahmet-dim);color:var(--ahmet);}
+.msg-bubble{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-size:.82rem;line-height:1.65;color:var(--text);flex:1;}
+.msg.from-claude .msg-bubble{border-color:rgba(176,77,255,.2);background:rgba(176,77,255,.05);}
+.msg-bubble code{font-family:var(--mono);font-size:.73rem;background:var(--bg);padding:1px 5px;border-radius:3px;color:#c0b4ff;}
+.msg-bubble pre{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;margin:8px 0;overflow-x:auto;}
+.msg-bubble pre code{background:transparent;padding:0;font-size:.75rem;color:#e8e8f0;}
+.msg-bubble strong{font-weight:600;color:#d0d0ff;}
+.msg-bubble p{margin-bottom:8px;}.msg-bubble p:last-child{margin-bottom:0;}
+.msg-bubble ul,.msg-bubble ol{padding-left:1.2rem;margin:6px 0;}
+.msg-bubble li{margin-bottom:3px;}
+
+.typing-indicator{display:flex;align-items:center;gap:5px;padding:10px 14px;}
+.typing-dot{width:6px;height:6px;border-radius:50%;background:var(--purple);opacity:.4;animation:typingBounce 1.2s ease-in-out infinite;}
+.typing-dot:nth-child(2){animation-delay:.2s;}
+.typing-dot:nth-child(3){animation-delay:.4s;}
+@keyframes typingBounce{0%,60%,100%{opacity:.4;transform:translateY(0);}30%{opacity:1;transform:translateY(-4px);}}
+
+.chat-input-area{padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:flex-end;flex-shrink:0;}
+.chat-textarea{flex:1;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-family:var(--sans);font-size:.82rem;padding:9px 12px;resize:none;min-height:40px;max-height:120px;line-height:1.5;}
+.chat-textarea:focus{outline:none;border-color:rgba(176,77,255,.4);}
+.chat-textarea::placeholder{color:var(--muted2);}
+.chat-send{width:38px;height:38px;border-radius:8px;border:1px solid rgba(176,77,255,.4);background:rgba(176,77,255,.12);color:var(--purple);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0;}
+.chat-send:hover{background:rgba(176,77,255,.25);}
+.chat-send:disabled{opacity:.35;cursor:not-allowed;}
+.chat-send svg{width:16px;height:16px;}
+
+.user-selector{display:flex;gap:6px;padding:10px 16px 0;flex-shrink:0;}
+.user-btn{font-family:var(--mono);font-size:.65rem;padding:4px 10px;border-radius:5px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;transition:all .15s;}
+.user-btn.active-k{border-color:var(--kayra-dim);background:var(--kayra-glow);color:var(--kayra);}
+.user-btn.active-a{border-color:var(--ahmet-dim);background:var(--ahmet-glow);color:var(--ahmet);}
+
+/* api key warning bar */
+.api-warning{background:rgba(176,77,255,.08);border:1px solid rgba(176,77,255,.25);border-radius:8px;padding:10px 14px;margin-bottom:1rem;display:flex;align-items:center;gap:10px;font-size:.8rem;color:#d4a0ff;cursor:pointer;transition:all .15s;}
+.api-warning:hover{background:rgba(176,77,255,.15);}
+.api-warning svg{width:16px;height:16px;flex-shrink:0;}
+
+/* toast */
+.toast{position:fixed;bottom:24px;right:24px;background:var(--bg2);border:1px solid var(--green-dim);color:var(--green);font-family:var(--mono);font-size:.75rem;padding:10px 16px;border-radius:8px;z-index:200;opacity:0;transform:translateY(8px);transition:all .2s;pointer-events:none;}
+.toast.show{opacity:1;transform:translateY(0);}
+
+/* scrollbar */
+::-webkit-scrollbar{width:6px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
+
+@media(max-width:700px){
+  .phase-body{grid-template-columns:1fr;}
+  .dev-col:first-child{border-right:none;border-bottom:1px solid var(--border);}
+  .machines{grid-template-columns:1fr;}
+  .progress-bars{grid-template-columns:1fr;}
+  .project-title{font-size:1.7rem;}
+  .stack-grid{grid-template-columns:1fr 1fr;}
+  .chat-modal{max-height:95vh;}
+}
+
+/* context card */
+.ctx-card{background:var(--bg3);border:1px solid var(--border2);border-radius:10px;padding:12px 14px;margin:0 0 4px;}
+.ctx-card-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+.ctx-icon{width:22px;height:22px;border-radius:5px;background:rgba(176,77,255,.15);border:1px solid rgba(176,77,255,.3);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.ctx-title{font-size:.75rem;font-weight:700;color:var(--purple);}
+.ctx-rows{display:flex;flex-direction:column;gap:6px;}
+.ctx-row{display:flex;gap:8px;font-size:.75rem;}
+.ctx-lbl{font-family:var(--mono);font-size:.65rem;color:var(--muted);min-width:70px;flex-shrink:0;padding-top:1px;}
+.ctx-val{color:var(--text);line-height:1.4;}
+.ctx-val code{font-family:var(--mono);font-size:.68rem;background:var(--bg);padding:1px 4px;border-radius:3px;color:var(--muted);}
+.ctx-toggle{font-family:var(--mono);font-size:.6rem;color:var(--muted2);margin-top:8px;cursor:pointer;user-select:none;}
+.ctx-toggle:hover{color:var(--muted);}
+.ctx-extra{display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);}
+.ctx-extra.open{display:block;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- HEADER -->
+<header>
+  <div class="header-top">
+    <div>
+      <div class="project-title">AI Roadmap<span>.</span></div>
+      <div class="project-sub">Kayra &amp; Ahmet · Apr 13 → May 1, 2026 · Python-only · RAG + fine-tune · 20 days</div>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-apikey" onclick="openApiKeyModal()">API Key</button>
+      <button class="btn btn-export" onclick="exportData()">Export</button>
+      <button class="btn btn-import" onclick="openImportModal()">Import</button>
+      <button class="btn btn-reset" onclick="confirmReset()">Reset</button>
+    </div>
+  </div>
+
+  <div id="api-warning" class="api-warning" onclick="openApiKeyModal()" style="display:none;">
+    <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm8-3.5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 4.5zm0 7.5a1 1 0 100-2 1 1 0 000 2z" fill="currentColor"/></svg>
+    <span>No Claude API key set — "How to do it" buttons won't work. Click here to add your key (stored locally, never sent anywhere except Claude's API).</span>
+  </div>
+
+  <div class="stats">
+    <div class="sc"><div class="sl">Total days</div><div class="sv">20</div><div class="sn">Apr 13 → May 1</div></div>
+    <div class="sc"><div class="sl">Est. hours</div><div class="sv">~88</div><div class="sn">combined · school limit</div></div>
+    <div class="sc"><div class="sl">Tasks done</div><div class="sv" id="stat-done">0</div><div class="sn" id="stat-done-sub">of 40 total</div></div>
+    <div class="sc"><div class="sl">Presentation</div><div class="sv">May 11</div><div class="sn">+10 day buffer</div></div>
+  </div>
+
+  <div class="overall-progress">
+    <div class="op-header">
+      <div class="op-title">Overall progress</div>
+      <div class="op-pct" id="overall-pct">0%</div>
+    </div>
+    <div class="progress-bars">
+      <div><div class="pbar-label"><span style="color:var(--kayra)">Kayra</span><span id="kayra-pct">0%</span></div><div class="pbar-track"><div class="pbar-fill fill-k" id="kayra-bar" style="width:0%"></div></div></div>
+      <div><div class="pbar-label"><span style="color:var(--ahmet)">Ahmet</span><span id="ahmet-pct">0%</span></div><div class="pbar-track"><div class="pbar-fill fill-a" id="ahmet-bar" style="width:0%"></div></div></div>
+    </div>
+  </div>
+
+  <div class="machines">
+    <div class="mcard">
+      <div class="mcard-avatar av-k">KA</div>
+      <div>
+        <div class="mcard-name">Kayra</div>
+        <div class="mcard-spec">MacBook Pro M5 Pro · 48 GB RAM · M5 Pro chip · confirmed</div>
+        <div class="mcard-tags"><span class="tag tag-k">mlx-lm</span><span class="tag tag-k">RAG/FAISS</span><span class="tag tag-k">fine-tuning</span><span class="tag tag-k">GUI help</span></div>
+      </div>
+    </div>
+    <div class="mcard">
+      <div class="mcard-avatar av-a">AH</div>
+      <div>
+        <div class="mcard-name">Ahmet</div>
+        <div class="mcard-spec">i3-1115G4 · 12 GB RAM · Intel Iris Xe</div>
+        <div class="mcard-tags"><span class="tag tag-no">cannot run model</span><span class="tag tag-a">SQLite / data</span><span class="tag tag-a">PyQt GUI</span><span class="tag tag-a">dataset pipeline</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="alert alert-green"><div class="alert-dot"></div><div><strong>GUI head start:</strong> Kayra already shipped chat input, output panel, settings sidebar, language + theme selector on the M5 Pro. These tasks are removed from Phase 1.</div></div>
+  <div class="alert alert-amber"><div class="alert-dot"></div><div><strong>YKS rule:</strong> School day tasks max 1 hour — one deliverable only. If it takes longer, it moves to the weekend. Never let the project cut into study time.</div></div>
+  <div class="alert alert-red"><div class="alert-dot"></div><div><strong>Feature freeze Apr 27.</strong> No new features after that date. Phase 3 (Apr 28–30) is testing and bug fixes only.</div></div>
+</header>
+
+<!-- PHASE TABS -->
+<div class="phase-tabs" id="phase-tabs">
+  <div class="ptab p1 active" onclick="switchPhase(0)"><div class="ptab-name">Phase 1 — Foundation</div><div class="ptab-date">Apr 13–20 · 8 days</div><div class="ptab-prog" id="tab-prog-0">0 / 16</div></div>
+  <div class="ptab p2" onclick="switchPhase(1)"><div class="ptab-name">Phase 2 — Features</div><div class="ptab-date">Apr 21–27 · 7 days</div><div class="ptab-prog" id="tab-prog-1">0 / 12</div></div>
+  <div class="ptab p4" onclick="switchPhase(2)"><div class="ptab-name">Phase 3 — Break It</div><div class="ptab-date">Apr 28–30 · 3 days</div><div class="ptab-prog" id="tab-prog-2">0 / 6</div></div>
+</div>
+  <div class="ptab p2" onclick="switchPhase(1)"><div class="ptab-name">Phase 2 — Train &amp; Wire</div><div class="ptab-date">Apr 15–21 · M5 Pro</div><div class="ptab-prog" id="tab-prog-1">0 / 14</div></div>
+  <div class="ptab p3" onclick="switchPhase(2)"><div class="ptab-name">Phase 3 — Features</div><div class="ptab-date">Apr 22–27 · M5 Pro</div><div class="ptab-prog" id="tab-prog-2">0 / 14</div></div>
+  <div class="ptab p4" onclick="switchPhase(3)"><div class="ptab-name">Phase 4 — Break It</div><div class="ptab-date">Apr 28–May 1 · Both</div><div class="ptab-prog" id="tab-prog-3">0 / 10</div></div>
+</div>
+
+
+<!-- ═══════ PHASE 1 ═══════ -->
+<div class="phase-panel active" id="phase-0">
+  <div class="phase-header"><div><div class="ph-title">Phase 1 — Foundation</div><div class="ph-sub">Model loads in app · ModelEngine + QThread · RAG indexer built · light LoRA fine-tune · core GUI features</div></div><span class="hw-chip hwm5">M5 Pro · 48 GB</span></div>
+  <div class="phase-body">
+    <div class="dev-col">
+      <div class="dev-header"><div class="dev-avatar av-k">KA</div><div><div class="dev-name">Kayra</div><div class="dev-role">Model · RAG · fine-tune · GUI help</div></div><span class="dev-count dc-k" id="col-0-0">0/7</span></div>
+      <div class="section-label">Before you start — Apr 13</div>
+      <div id="tasks-0-pre-k"></div>
+      <div class="section-label">Apr 14–20</div>
+      <div id="tasks-0-k"></div>
+      <div class="info-box ib-learn"><div class="ib-title">Kayra learns this week</div><div class="ib-item">RAG: embeddings turn text into vectors, FAISS finds nearest vectors — this is how "search by meaning" works</div><div class="ib-item">6-bit quantization loads ~13GB into unified RAM — leaves 35GB free for OS + GUI</div><div class="ib-item">LoRA rank 4–8 is enough for behavior nudging — you don't need rank 16 for a light tune</div></div>
+    </div>
+    <div class="dev-col">
+      <div class="dev-header"><div class="dev-avatar av-a">AH</div><div><div class="dev-name">Ahmet</div><div class="dev-role">SQLite · data pipeline · GUI features</div></div><span class="dev-count dc-a" id="col-0-1">0/7</span></div>
+      <div class="section-label">Before you start — Apr 13</div>
+      <div id="tasks-0-pre-a"></div>
+      <div class="section-label">Apr 14–20</div>
+      <div id="tasks-0-a"></div>
+      <div class="info-box ib-learn"><div class="ib-title">Ahmet learns this week</div><div class="ib-item">SQLite FTS5: <code>CREATE VIRTUAL TABLE t USING fts5(...)</code> then <code>SELECT * FROM t WHERE t MATCH 'keyword'</code></div><div class="ib-item"><code>QSyntaxHighlighter</code>: subclass it, override <code>highlightBlock(text)</code>, use <code>setFormat(start, length, format)</code></div><div class="ib-item">Transactions: <code>conn.execute("BEGIN"); ... conn.commit()</code> — 50x faster than auto-commit per row</div></div>
+    </div>
+  </div>
+  <div class="phase-footer"><div class="chips-row"><span class="chip">mlx-lm</span><span class="chip">faiss</span><span class="chip">sentence-transformers</span><span class="chip">QThread</span><span class="chip">sqlite3</span><span class="chip">mlx_lm.lora</span></div><div class="goal-text">Model runs in app. RAG indexed. Light fine-tune merged. Core GUI done.</div></div>
+</div>
+
+<!-- ═══════ PHASE 2 ═══════ -->
+<div class="phase-panel" id="phase-1">
+  <div class="phase-header"><div><div class="ph-title">Phase 2 — Features</div><div class="ph-sub">System prompt · Run button · settings · RAG docs indexed · integration test · feature freeze Apr 27</div></div><span class="hw-chip hwm5">M5 Pro · 48 GB</span></div>
+  <div class="phase-body">
+    <div class="dev-col">
+      <div class="dev-header"><div class="dev-avatar av-k">KA</div><div><div class="dev-name">Kayra</div><div class="dev-role">System prompt · runner · RAG docs · eval</div></div><span class="dev-count dc-k" id="col-1-0">0/6</span></div>
+      <div class="section-label">Apr 21–27</div>
+      <div id="tasks-1-k"></div>
+      <div class="info-box ib-purple"><div class="ib-title">"Ask before acting" — system prompt strategy</div><div class="ib-item">Core rule: "Before writing any code, list EVERY unclear point. Ask them one by one. Do not write a single line until all questions are answered."</div><div class="ib-item">Test it adversarially: "make the login work" must trigger questions, never code</div></div>
+    </div>
+    <div class="dev-col">
+      <div class="dev-header"><div class="dev-avatar av-a">AH</div><div><div class="dev-name">Ahmet</div><div class="dev-role">Run button UI · settings · onboarding · RAG badge</div></div><span class="dev-count dc-a" id="col-1-1">0/6</span></div>
+      <div class="section-label">Apr 21–27</div>
+      <div id="tasks-1-a"></div>
+      <div class="info-box ib-warn"><div class="ib-title">Feature freeze — Apr 27 end of day</div><div class="ib-item">Nothing new after Apr 27. Phase 3 is testing and bug fixes only.</div><div class="ib-item">P0 = crash · P1 = wrong behavior · P2 = cosmetic. Fix P0+P1 before May 1.</div></div>
+    </div>
+  </div>
+  <div class="phase-footer"><div class="chips-row"><span class="chip">system prompt</span><span class="chip">subprocess runner</span><span class="chip">faiss docs index</span><span class="chip">ast.parse benchmark</span><span class="chip">run.sh</span></div><div class="goal-text">All features done. Benchmark run. Feature freeze. Ready to break.</div></div>
+</div>
+
+<!-- ═══════ PHASE 3 ═══════ -->
+<div class="phase-panel" id="phase-2">
+  <div class="phase-header"><div><div class="ph-title">Phase 3 — Break It</div><div class="ph-sub">Apr 28–30 · No new features · destroy it from every angle · fix only P0 and P1 · ship May 1</div></div><span class="hw-chip hwboth">Both machines</span></div>
+  <div class="phase-body">
+    <div class="dev-col">
+      <div class="dev-header"><div class="dev-avatar av-k">KA</div><div><div class="dev-name">Kayra</div><div class="dev-role">Model tests · stress · benchmark</div></div><span class="dev-count dc-k" id="col-2-0">0/3</span></div>
+      <div class="section-label">Break tests — model</div>
+      <div id="tasks-2-k"></div>
+      <div class="info-box ib-red"><div class="ib-title">Ship gate — must pass all 3</div><div class="ib-item">No P0 bugs</div><div class="ib-item">Benchmark ≥ 80% valid Python via ast.parse()</div><div class="ib-item">"Ask before acting" fires on every vague prompt</div></div>
+    </div>
+    <div class="dev-col">
+      <div class="dev-header"><div class="dev-avatar av-a">AH</div><div><div class="dev-name">Ahmet</div><div class="dev-role">GUI stress · memory · final docs</div></div><span class="dev-count dc-a" id="col-2-1">0/3</span></div>
+      <div class="section-label">Break tests — GUI and memory</div>
+      <div id="tasks-2-a"></div>
+      <div class="info-box ib-purple"><div class="ib-title">May 1–11 buffer</div><div class="ib-item">May 1–4: competitions / travel — use the app, note bugs</div><div class="ib-item">May 5–10: fix P2 cosmetic bugs, rehearse demo</div><div class="ib-item">May 11 demo: vague prompt → AI asks → answer → code → Run → output</div></div>
+    </div>
+  </div>
+  <div class="phase-footer"><div class="chips-row"><span class="chip">50-prompt benchmark</span><span class="chip">ast.parse scorer</span><span class="chip">RAM monitor</span><span class="chip">run.sh</span></div><div class="goal-text">No P0 bugs. 80%+ benchmark. Ships May 1.</div></div>
+</div>
+
+<!-- STACK -->
+<div class="stack-grid">
+  <div class="sg"><div class="sg-label">Model</div><div class="sg-val">Qwen3.5-27B Distilled</div><div class="sg-note">Claude Opus 4.6 reasoning · 6-bit MLX</div></div>
+  <div class="sg"><div class="sg-label">Inference</div><div class="sg-val">mlx-lm (direct import)</div><div class="sg-note">Same process as GUI · no HTTP</div></div>
+  <div class="sg"><div class="sg-label">RAG</div><div class="sg-val">FAISS + sentence-transformers</div><div class="sg-note">Codebase + Python docs indexed</div></div>
+  <div class="sg"><div class="sg-label">Fine-tuning</div><div class="sg-val">MLX LoRA · light pass</div><div class="sg-note">500 iters · merge into model</div></div>
+  <div class="sg"><div class="sg-label">Architecture</div><div class="sg-val">One Python process</div><div class="sg-note">GUI imports model directly</div></div>
+  <div class="sg"><div class="sg-label">Ahmet's PC</div><div class="sg-val">GUI · DB · data only</div><div class="sg-note">Cannot run model</div></div>
+</div>
+
+</div><!-- /wrap -->
+
+<!-- ═══════════ API KEY MODAL ═══════════ -->
+<div class="modal-overlay" id="apikey-overlay">
+  <div class="apikey-modal">
+    <h3>Claude API Key</h3>
+    <p>Enter your Anthropic API key to enable the "How to do it" feature. Your key is stored ONLY in your browser's localStorage — it never leaves your machine except to call Claude's API directly.</p>
+    <input type="password" id="apikey-input" placeholder="sk-ant-..." />
+    <div class="apikey-note">Get a key at console.anthropic.com · ~$0.003 per task question</div>
+    <div class="modal-btns">
+      <button class="btn" onclick="closeApiKeyModal()">Cancel</button>
+      <button class="btn btn-apikey" onclick="saveApiKey()">Save Key</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ IMPORT MODAL ═══════════ -->
+<div class="modal-overlay" id="import-overlay">
+  <div class="apikey-modal">
+    <h3>Import progress</h3>
+    <p>Paste the JSON exported from the other person's machine. This overwrites your current checkbox state.</p>
+    <textarea id="import-text" style="width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-family:var(--mono);font-size:.75rem;padding:10px;resize:vertical;min-height:80px;" placeholder='{"0-k-0":true,"0-a-1":false,...}'></textarea>
+    <div class="modal-btns">
+      <button class="btn" onclick="closeImportModal()">Cancel</button>
+      <button class="btn btn-import" onclick="doImport()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ CLAUDE CHAT MODAL ═══════════ -->
+<div class="modal-overlay" id="chat-overlay">
+  <div class="chat-modal">
+    <div class="chat-modal-head">
+      <div class="chat-modal-head-icon">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.96 9.96 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z" stroke="var(--purple)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 12h.01M12 12h.01M16 12h.01" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"/></svg>
+      </div>
+      <div style="flex:1">
+        <div class="chat-task-label">How to do it — Claude AI Help</div>
+        <div class="chat-task-title" id="chat-task-title">Task title</div>
+      </div>
+      <button class="chat-close" onclick="closeChatModal()">✕</button>
+    </div>
+    <div class="user-selector">
+      <button class="user-btn active-k" id="user-btn-k" onclick="setUser('k')">Kayra</button>
+      <button class="user-btn" id="user-btn-a" onclick="setUser('a')">Ahmet</button>
+    </div>
+    <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-input-area">
+      <textarea class="chat-textarea" id="chat-input" placeholder="Ask anything about this task..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+      <button class="chat-send" id="chat-send-btn" onclick="sendMessage()">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════
+// TASK DATA
+// ═══════════════════════════════════════════
+const TASKS = {
+  '0-pre-k': [
+    {id:'0-pre-k-0', date:'Apr 13 — Sun', est:'1 hr', text:`Review old AI project GUI with Ahmet. Screenshot every reusable component — colors, buttons, layout. Copy into <code>ui_reference/</code> folder. Agree on what to keep vs rebuild`},
+    {id:'0-pre-k-1', date:'Apr 13 — Sun', est:'1 hr', text:`Create GitHub folder structure on <code>main</code>: <code>backend/</code>, <code>gui/</code>, <code>data/</code>, <code>models/</code>, <code>rag/</code>, <code>scripts/</code>, <code>tests/</code>, <code>ui_reference/</code>. Add <code>.gitignore</code> and <code>README.md</code>. Create <code>kayra-dev</code> and <code>ahmet-dev</code> branches`},
+  ],
+  '0-pre-a': [
+    {id:'0-pre-a-0', date:'Apr 13 — Sun', est:'1 hr', text:`Review old GUI with Kayra. Write a short shared design spec: what to keep, what to rebuild, what to fix. Clone the repo, check out <code>ahmet-dev</code>, create <code>gui/main_window.py</code> skeleton and push first commit`},
+    {id:'0-pre-a-1', date:'Apr 13 — Sun', est:'1 hr', text:`Create SQLite DB with 4 tables: <code>dataset</code> (instruction, output, source, quality), <code>snippets</code> (AI memory), <code>sessions</code> (chat history), <code>context_files</code> (loaded project files). Wrap all bulk inserts in <code>BEGIN/COMMIT</code> transactions`},
+  ],
+  '0-k': [
+    {id:'0-k-0', date:'Apr 14 — Mon', est:'1 hr', text:`Install <code>mlx-lm</code>, <code>transformers</code>. Load model: <code>mlx_lm.load('mlx-community/MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-6bit')</code>. Run one test prompt in terminal — confirm tokens stream at ~35 tok/s`},
+    {id:'0-k-1', date:'Apr 15 — Tue', est:'1 hr', text:`Write <code>backend/model.py</code> — <code>ModelEngine</code> class: loads model once in <code>__init__</code>, exposes <code>stream(prompt, on_token, stop_event)</code>. Test standalone: <code>python backend/model.py</code>. No HTTP, no server — pure Python`},
+    {id:'0-k-2', date:'Apr 16 — Wed', est:'1 hr', text:`Wire <code>ModelEngine</code> into GUI via <code>QThread</code>: subclass <code>QThread</code>, call <code>engine.stream()</code> in <code>run()</code>, emit each token via Qt signal to output panel. Tokens appear live. Add stop button using <code>threading.Event</code>`},
+    {id:'0-k-3', date:'Apr 17 — Thu', est:'1 hr', text:`Write <code>rag/indexer.py</code>: walk <code>.py</code> files in project folder, chunk each file into 200-line blocks, embed with <code>mlx_lm</code> or <code>sentence-transformers</code>, store embeddings in a <code>faiss</code> index saved to disk`},
+    {id:'0-k-4', date:'Apr 19 — Sat', est:'3 hrs', text:`Write <code>rag/retriever.py</code>: given a user prompt, embed it, search the faiss index for top-5 relevant chunks, return them. Write the context injector: prepend retrieved chunks into the system prompt before every model call. Test with 10 prompts — do retrieved chunks actually help?`},
+    {id:'0-k-5', date:'Apr 20 — Sun', est:'4 hrs', text:`Light LoRA fine-tuning: run <code>mlx_lm.lora</code> for 500 iterations (not 1000) on ~500 of your best "ask before acting" + Python style examples. Merge adapter with <code>mlx_lm.fuse()</code>, update <code>MODEL_PATH</code> in model.py, restart app and confirm it still runs`},
+  ],
+  '0-a': [
+    {id:'0-a-0', date:'Apr 14 — Mon', est:'1 hr', text:`Write the codebase scraper: walk <code>.py</code> files, extract functions + docstrings, format as instruction/output pairs, insert into <code>dataset</code> table. Target 500+ high-quality rows — quality over quantity`},
+    {id:'0-a-1', date:'Apr 15 — Tue', est:'1 hr', text:`Data cleaning: dedup by <code>hashlib</code> MD5, validate with <code>ast.parse()</code>, drop rows under 3 or over 100 lines. Hand-write 20 "ask before acting" examples — these are the most important rows in the whole dataset`},
+    {id:'0-a-2', date:'Apr 16 — Wed', est:'1 hr', text:`Add syntax highlighting to PyQt output panel using <code>QSyntaxHighlighter</code>. Python keywords, strings, comments, function names in distinct colors. Test on a 50-line generated response`},
+    {id:'0-a-3', date:'Apr 17 — Thu', est:'1 hr', text:`Snippet auto-save: parse every code block between triple backticks from AI responses, save to <code>snippets</code> table automatically. Build the snippet memory sidebar: dockable panel, click any snippet to copy or inject into prompt`},
+    {id:'0-a-4', date:'Apr 19 — Sat', est:'4 hrs', text:`Session persistence: save full conversation to <code>sessions</code> table on close, auto-reload on restart. Add session browser dropdown in GUI header. Add context file loader: user drags <code>.py</code> file → stored in <code>context_files</code> → injected into system prompt as chips above input`},
+    {id:'0-a-5', date:'Apr 20 — Sun', est:'4 hrs', text:`Model status bar: idle / loading / generating + live tok/s counter. 5-session memory picker: user selects which past sessions to inject as context. SQLite FTS5 search on snippets table: <code>CREATE VIRTUAL TABLE snippets_fts USING fts5</code>, hook into search bar`},
+  ],
+  '1-k': [
+    {id:'1-k-0', date:'Apr 21 — Mon', est:'1 hr', text:`Engineer the "ask before acting" system prompt — write 3 versions, test each on 5 vague prompts. The winner must make the model list all unclear points before writing any code. Document which version wins and why`},
+    {id:'1-k-1', date:'Apr 22 — Tue', est:'1 hr', text:`Add generation params to <code>ModelEngine.stream()</code>: accept <code>temp</code>, <code>max_tokens</code>, <code>top_p</code>, <code>repetition_penalty</code>. Connect to Ahmet's GUI settings sliders. Test: temp 0.1 vs 0.9 on same prompt`},
+    {id:'1-k-2', date:'Apr 23 — Wed', est:'1 hr', text:`Build sandboxed code runner: <code>subprocess.run([sys.executable, '-c', code], timeout=10, capture_output=True)</code>. Block <code>import os</code>, <code>import sys</code>, <code>import subprocess</code> from generated code. Runs ONLY on Run button click`},
+    {id:'1-k-3', date:'Apr 24 — Thu', est:'1 hr', text:`Index Python docs for RAG: download Python 3 official docs (plain text), chunk and embed them alongside your codebase into the faiss index. Run 10 prompts comparing RAG on vs off — document quality difference`},
+    {id:'1-k-4', date:'Apr 26 — Sat', est:'3 hrs', text:`Full integration test with Ahmet: load a real .py file as context, send a vague prompt, watch "ask before acting" fire, answer the questions, get code, hit Run, see output. Write run.sh: one command starts everything. List every bug found`},
+    {id:'1-k-5', date:'Apr 27 — Sun', est:'4 hrs', text:`Fix every bug from Saturday. Write eval script: 30 fixed Python prompts, score with <code>ast.parse()</code>. Run benchmark. Feature freeze after today — no new features from Apr 28 onward`},
+  ],
+  '1-a': [
+    {id:'1-a-0', date:'Apr 21 — Mon', est:'1 hr', text:`Run button UI in output panel: button appears below every code block. Sends code to Kayra's subprocess runner. Shows spinner while running, displays stdout + stderr inline below the block`},
+    {id:'1-a-1', date:'Apr 22 — Tue', est:'1 hr', text:`Settings panel: temperature slider, max tokens input, top_p slider, clear history button, model path display. All values persist in a local config file (<code>config.json</code>) and load on startup`},
+    {id:'1-a-2', date:'Apr 23 — Wed', est:'1 hr', text:`First-launch onboarding: empty state screen with 3 example prompts the user can click. Disappears after first real message. Add model loading screen shown while <code>ModelEngine.__init__</code> runs on startup`},
+    {id:'1-a-3', date:'Apr 24 — Thu', est:'1 hr', text:`RAG status indicator in GUI: small badge showing "RAG: X docs indexed" in status bar. Button to re-index (calls Kayra's indexer). Shows which chunks were retrieved for the last response in a collapsible panel`},
+    {id:'1-a-4', date:'Apr 26 — Sat', est:'3 hrs', text:`Integration test with Kayra: end-to-end flow. Dark mode audit — every screen, fix invisible text or broken layouts. App must look correct on both themes`},
+    {id:'1-a-5', date:'Apr 27 — Sun', est:'4 hrs', text:`Fix every bug from Saturday. Write README: installation, how to run, how to index codebase for RAG, how to retrain, known limitations. Feature freeze — nothing new after today`},
+  ],
+  '2-k': [
+    {id:'2-k-0', date:'Apr 28 — Mon', est:'1 hr', text:`"Ask before acting" torture: send 10 vague prompts — "make the thing work", "fix this", "add the feature". Every single one MUST trigger clarification questions before any code. Any that don't = P0 bug, fix immediately`},
+    {id:'2-k-1', date:'Apr 29 — Tue', est:'1 hr', text:`Stress test: 50 consecutive generations. Watch RAM in Activity Monitor — look for leaks or crashes. Run 30-prompt ast.parse() benchmark: target ≥ 80% valid Python. Write final score to README`},
+    {id:'2-k-2', date:'Apr 30 — Wed', est:'1 hr', text:`Edge cases: empty prompt, 5000-char prompt, prompt in Turkish, non-Python question. Run button safety: send dangerous code (<code>import os; os.system('rm -rf /')</code>, infinite loop) — must be blocked every time. Log all results`},
+  ],
+  '2-a': [
+    {id:'2-a-0', date:'Apr 28 — Mon', est:'1 hr', text:`GUI rage test: spam Send before response finishes, switch models mid-generation, drag 3 large files at once, spam stop button. App must not crash or freeze under any of these`},
+    {id:'2-a-1', date:'Apr 29 — Tue', est:'1 hr', text:`Memory test: create 6 sessions, switch randomly, verify correct history loads every time. FTS search: type keywords from known snippets — results must be accurate with no cross-session leaks`},
+    {id:'2-a-2', date:'Apr 30 — Wed', est:'1 hr', text:`Final polish: fix all P1/P2 bugs found. Finalize README. Prepare 5-min May 11 demo script: vague prompt → AI asks → user answers → code generated → Run → output shown`},
+  ],
+};
+
+// ═══════════════════════════════════════════
+// RENDER TASKS
+// ═══════════════════════════════════════════
+function renderTasks() {
+  Object.keys(TASKS).forEach(key => {
+    const container = document.getElementById('tasks-' + key);
+    if (!container) return;
+    const [phase, person] = key.split('-');
+    container.innerHTML = '';
+    TASKS[key].forEach(task => {
+      const cls = person === 'k' ? 'kayra-task' : 'ahmet-task';
+      const el = document.createElement('div');
+      el.className = `task-item ${cls}`;
+      el.dataset.id = task.id;
+      el.innerHTML = `
+        <div class="task-cb" onclick="toggleTask(event,'${task.id}')">
+          <svg class="cb-check" viewBox="0 0 10 10"><path d="M1.5 5l2.5 2.5 4.5-4.5"/></svg>
+        </div>
+        <div class="task-content" onclick="toggleTask(event,'${task.id}')">
+          <div class="task-text">${task.text}</div>
+          <div class="task-date"><span>${task.date}</span><span class="est-badge">${task.est}</span></div>
+        </div>
+        <button class="htd-btn" onclick="openChat('${task.id}',event)" title="Ask Claude how to do this task">
+          <svg viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2"/><path d="M4.5 4.5C4.5 3.67 5.17 3 6 3s1.5.67 1.5 1.5c0 .83-.67 1.5-1.5 1.5v1M6 9h.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+          How to do it
+        </button>
+      `;
+      container.appendChild(el);
+    });
+  });
+}
+
+// ═══════════════════════════════════════════
+// CHECKBOX LOGIC
+// ═══════════════════════════════════════════
+const STORE = 'ai_roadmap_v2';
+function getState() { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch(e) { return {}; } }
+function saveState(s) { localStorage.setItem(STORE, JSON.stringify(s)); }
+
+function toggleTask(e, id) {
+  e.stopPropagation();
+  const state = getState();
+  state[id] = !state[id];
+  saveState(state);
+  applyState(state);
+  updateProgress();
+}
+
+function applyState(state) {
+  document.querySelectorAll('.task-item').forEach(el => {
+    el.classList.toggle('done', !!state[el.dataset.id]);
+  });
+}
+
+function updateProgress() {
+  const state = getState();
+  let kTotal=0,kDone=0,aTotal=0,aDone=0;
+  for(let p=0;p<3;p++){
+    let pkD=0,paD=0,pkT=0,paT=0;
+    document.querySelectorAll(`#phase-${p} .kayra-task`).forEach(el=>{pkT++;if(state[el.dataset.id])pkD++;kTotal++;if(state[el.dataset.id])kDone++;});
+    document.querySelectorAll(`#phase-${p} .ahmet-task`).forEach(el=>{paT++;if(state[el.dataset.id])paD++;aTotal++;if(state[el.dataset.id])aDone++;});
+    const ck=document.getElementById(`col-${p}-0`);const ca=document.getElementById(`col-${p}-1`);
+    if(ck)ck.textContent=`${pkD}/${pkT}`;if(ca)ca.textContent=`${paD}/${paT}`;
+    const tp=document.getElementById(`tab-prog-${p}`);
+    if(tp)tp.textContent=`${pkD+paD} / ${pkT+paT}`;
+  }
+  const tot=kTotal+aTotal,done=kDone+aDone;
+  const pct=tot?Math.round(done/tot*100):0;
+  const kp=kTotal?Math.round(kDone/kTotal*100):0;
+  const ap=aTotal?Math.round(aDone/aTotal*100):0;
+  document.getElementById('overall-pct').textContent=pct+'%';
+  document.getElementById('kayra-pct').textContent=kp+'%';
+  document.getElementById('ahmet-pct').textContent=ap+'%';
+  document.getElementById('kayra-bar').style.width=kp+'%';
+  document.getElementById('ahmet-bar').style.width=ap+'%';
+  document.getElementById('stat-done').textContent=done;
+  document.getElementById('stat-done-sub').textContent=`of ${tot} total`;
+}
+
+let currentPhase=0;
+function switchPhase(n){
+  document.querySelectorAll('.phase-panel').forEach((p,i)=>p.classList.toggle('active',i===n));
+  document.querySelectorAll('.ptab').forEach((t,i)=>t.classList.toggle('active',i===n));
+  currentPhase=n;
+}
+
+// ═══════════════════════════════════════════
+// API KEY
+// ═══════════════════════════════════════════
+const KEY_STORE='ai_roadmap_apikey';
+function getApiKey(){return localStorage.getItem(KEY_STORE)||'';}
+function openApiKeyModal(){document.getElementById('apikey-input').value=getApiKey();document.getElementById('apikey-overlay').classList.add('open');}
+function closeApiKeyModal(){document.getElementById('apikey-overlay').classList.remove('open');}
+function saveApiKey(){
+  const v=document.getElementById('apikey-input').value.trim();
+  if(!v){alert('Please enter an API key.');return;}
+  localStorage.setItem(KEY_STORE,v);
+  closeApiKeyModal();
+  document.getElementById('api-warning').style.display='none';
+  showToast('API key saved!');
+}
+function checkApiKey(){
+  if(!getApiKey()) document.getElementById('api-warning').style.display='flex';
+}
+
+// ═══════════════════════════════════════════
+// CLAUDE CHAT
+// ═══════════════════════════════════════════
+let chatHistory=[];
+let currentTaskId='';
+let currentUser='k';
+let isStreaming=false;
+
+const PROJECT_CONTEXT = `You are a helpful AI assistant embedded in a project management tool for two Turkish high school students (12th grade, preparing for the YKS university entrance exam) who are building their own AI coding assistant.
+
+PROJECT OVERVIEW:
+- Goal: Build a local AI pair-programmer that writes production-grade, PEP8-compliant, type-hinted Python code
+- Key behavior: The AI must NEVER assume — it lists all unclear points first, then asks one by one before writing any code
+- Stack: PyQt GUI (already built) + FastAPI backend + SQLite database + MLX inference + QLoRA fine-tuning + VS Code extension
+- Timeline: April 13 → May 1, 2026 (20 days). Presentation: May 11, 2026
+
+TEAM:
+- Kayra: MacBook Pro M5 Pro 48GB unified RAM. Handles: model inference (mlx-lm direct import), RAG (FAISS + sentence-transformers), light LoRA fine-tune, system prompt engineering, sandboxed code runner, helps with GUI
+- Ahmet: Intel i3-1115G4, 12GB RAM, Intel Iris Xe integrated GPU (CANNOT run any AI model). Handles: PyQt GUI, SQLite database, dataset pipeline, data cleaning
+
+HARDWARE FACTS:
+- Kayra has a MacBook Pro M5 Pro with 48GB unified RAM — confirmed in hand
+- Inference: mlx-lm runs DIRECTLY inside Kayra's FastAPI server. The model loads at startup. No LM Studio, no Ollama, no external process — ONLY their Python program runs
+- Fine-tuning: MLX LoRA on the M5 Pro, merge adapter into model weights, load fused model in the same FastAPI server
+- Ahmet's i3 PC: cannot run any LLM under any circumstance (Intel Iris Xe has ~1GB shared VRAM)
+- ONE program running: FastAPI server (loads mlx-lm model) + PyQt GUI (connects to it)
+
+MODELS & INFERENCE:
+- Primary model: Qwen3.5-27B Distilled (Mixture of Experts — 30B total params, only ~3B active per token, mlx-community 4-bit quantized version)
+- Architecture: PyQt GUI + ModelEngine (mlx-lm) + RAG retriever all run in ONE Python process. GUI imports model.py directly. No HTTP, no ports, no external processes.
+- ModelEngine runs in a QThread so it doesn't freeze the GUI. Tokens are emitted via Qt signals.
+- Fine-tuning: MLX LoRA, rank=16, alpha=32, 3 epochs on ~6000 Python instruction pairs
+- After fine-tuning: mlx_lm.fuse() merges adapter → MODEL_PATH in model.py points to ./models/fused
+- VS Code extension is the ONLY exception that needs HTTP (it's a separate process) — a minimal FastAPI endpoint wraps ModelEngine just for VS Code
+- One program to run: python main.py — that's it
+
+DATABASE (SQLite, 4 tables):
+- dataset: instruction, output, source, quality columns — training data
+- snippets: AI-generated code blocks saved automatically
+- sessions: chat history with user-selectable context injection (last 5 sessions)
+- context_files: project files dragged into GUI for codebase context
+
+GUI (PyQt/PySide — already built features):
+- Chat input + send button, output/response panel, settings sidebar, language selector, theme selector
+- Still needed: streaming token output, syntax highlighting, snippet memory panel, model status bar, model selector, Run button, VS Code connection badge, session browser, onboarding screen
+
+SCHOOL CONSTRAINT:
+- Weekdays: max 1 hour per person on the project
+- Saturdays: Kayra 3hrs, Ahmet 3-5hrs
+- Sundays: both 5-7hrs (absolute maximum)
+- Both studying for YKS — never suggest anything that would take more than the available hours
+
+MUST-HAVE FEATURES (all 4 by May 1):
+1. "Ask before acting" clarification behavior
+2. VS Code extension (TypeScript, sidebar webview, right-click commands)
+3. Sandboxed Run button (subprocess with 10s timeout, blocks dangerous imports)
+4. Snippet memory panel (auto-save + FTS5 search)
+
+When answering questions about tasks:
+- Be specific and practical — give actual code snippets when helpful
+- Always consider which machine the task is running on
+- Keep answers focused and actionable — they have limited time
+- If a task involves something they haven't encountered before (SQLite, MLX, LoRA, etc.), explain the key concept briefly first
+- Format code blocks with proper markdown triple backticks and language tags`;
+
+function getTaskById(id){
+  // handles: '0-k-0', '0-a-2', '0-pre-k-0', '0-pre-a-1', '3-k-4' etc.
+  const m=id.match(/^(\d+(?:-pre)?-[ka])-\d+$/);
+  if(!m) return null;
+  return (TASKS[m[1]]||[]).find(t=>t.id===id)||null;
+}
+
+function stripHtml(str){return str.replace(/<[^>]+>/g,'').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&#39;/g,"'");}
+
+function buildInitialPrompt(task, taskId){
+  const isKayra = taskId.includes('-k-');
+  const person = isKayra ? 'Kayra' : 'Ahmet';
+
+  // Determine exact hardware based on phase
+  const phase = parseInt(taskId.split('-')[0]);
+  let hw = '';
+  if(isKayra){
+    hw = 'MacBook Pro M5 Pro, 48GB unified RAM, Apple M5 Pro chip, running macOS. The GUI (PyQt) and the AI model (mlx-lm, Qwen3.5-27B Distilled 4-bit (reasoning-distilled 27B model)) run in THE SAME Python process — model.py is imported directly, no HTTP, no ports. ModelEngine runs in a QThread and emits tokens via Qt signals. Only ONE program runs: python main.py. The only exception is a tiny FastAPI endpoint added later for the VS Code extension.';
+  } else {
+    hw = 'Windows PC, Intel Core i3-1115G4 (2 cores, 4 threads, up to 4.1GHz), 12GB DDR4 RAM, Intel Iris Xe integrated graphics (shared VRAM ~1GB). CANNOT run any LLM or AI model under any circumstances. Python, PyQt, SQLite all work fine.';
+  }
+
+  const phaseNames = ['Phase 1 — Foundation (Apr 13–20)','Phase 2 — Features (Apr 21–27)','Phase 3 — Break It (Apr 28–30)'];
+  const taskText = stripHtml(task.text);
+
+  return `I am ${person}, a Turkish high school student (12th grade, studying for YKS university entrance exam). I am working on a collaborative AI project with my partner and I need help with a specific task.
+
+MY MACHINE RIGHT NOW:
+${hw}
+
+MY ROLE IN THE PROJECT:
+${isKayra
+  ? 'I handle: FastAPI backend, MLX model inference, LoRA fine-tuning, VS Code TypeScript extension, streaming SSE, model benchmarking.'
+  : 'I handle: PyQt/PySide GUI development, SQLite database design, dataset pipeline, data cleaning scripts, Python scrapers.'}
+
+THE TASK I NEED HELP WITH:
+"${taskText}"
+
+TASK DETAILS:
+- Phase: ${phaseNames[phase]}
+- Scheduled: ${task.date}
+- Time budget: ${task.est} (school day — I only have this much time)
+
+PROJECT CONTEXT:
+- We are building a local AI coding assistant (Python-only, PEP8 + type hints)
+- GUI is PyQt and already has: chat input, output panel, settings sidebar, language selector, theme selector
+- Backend is FastAPI + MLX running locally
+- Model: Qwen3.5-27B Distilled (MoE, 4-bit MLX) — runs directly in Python via mlx_lm.load(), same process as GUI
+- Database: SQLite with 4 tables: dataset, snippets, sessions, context_files
+- Key AI behavior: must list ALL unclear points before writing any code, never assume
+
+Please give me a practical, step-by-step breakdown of how to do this task. Include actual code where relevant. Keep it focused — I have limited time and I am new to the AI/ML side of things but know Python well.`;
+}
+
+async function openChat(taskId, e){
+  e.stopPropagation();
+  if(!getApiKey()){
+    openApiKeyModal();
+    showToast('Add your API key first to use this feature.');
+    return;
+  }
+  currentTaskId=taskId;
+  chatHistory=[];
+  const task=getTaskById(taskId);
+  if(!task) return;
+
+  const title=stripHtml(task.text);
+  document.getElementById('chat-task-title').textContent=title.length>80?title.slice(0,80)+'...':title;
+  const msgs=document.getElementById('chat-messages');
+  msgs.innerHTML='';
+
+  // Auto-set user based on task
+  setUser(taskId.includes('-k-')?'k':'a');
+
+  // Open modal immediately
+  document.getElementById('chat-overlay').classList.add('open');
+  document.getElementById('chat-send-btn').disabled=true;
+  isStreaming=true;
+
+  // Build the full context prompt (sent to API only — not shown as raw text)
+  const firstMsg = buildInitialPrompt(task, taskId);
+  chatHistory.push({role:'user', content: firstMsg});
+
+  // Show a clean context card instead of the raw prompt
+  addContextCard(task, taskId);
+
+  // Immediately call Claude API
+  addTyping();
+  try{
+    const resp=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'x-api-key':getApiKey(),
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true'
+      },
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:1800,
+        system:PROJECT_CONTEXT,
+        messages:[{role:'user',content:firstMsg}]
+      })
+    });
+    removeTyping();
+    if(!resp.ok){
+      const err=await resp.json().catch(()=>({}));
+      const errMsg=err.error?.message||'API call failed';
+      addMessage('claude','**Error '+resp.status+':** '+errMsg+'\n\nIf 401: check your API key. If 429: you hit rate limits, wait a minute.');
+    } else {
+      const data=await resp.json();
+      const reply=data.content?.[0]?.text||'Sorry, empty response. Please ask a follow-up question.';
+      addMessage('claude',reply);
+      chatHistory.push({role:'assistant',content:reply});
+    }
+  }catch(err){
+    removeTyping();
+    addMessage('claude','**Connection error:** '+err.message+'\n\nCheck your internet connection and API key.');
+  }
+  isStreaming=false;
+  document.getElementById('chat-send-btn').disabled=false;
+  setTimeout(()=>document.getElementById('chat-input').focus(),50);
+}
+
+function closeChatModal(){
+  document.getElementById('chat-overlay').classList.remove('open');
+  chatHistory=[];
+}
+
+function setUser(u){
+  currentUser=u;
+  document.getElementById('user-btn-k').className='user-btn'+(u==='k'?' active-k':'');
+  document.getElementById('user-btn-a').className='user-btn'+(u==='a'?' active-a':'');
+}
+
+
+function addContextCard(task, taskId){
+  const msgs=document.getElementById('chat-messages');
+  const isKayra=taskId.includes('-k-');
+  const phase=parseInt(taskId.split('-')[0]);
+  const person=isKayra?'Kayra':'Ahmet';
+  const hw=isKayra
+    ?'MacBook Pro M5 Pro · 48 GB RAM'
+    :'Windows PC · i3-1115G4 · 12 GB RAM · no GPU';
+  const role=isKayra?'FastAPI · MLX · fine-tuning · VS Code ext':'PyQt GUI · SQLite · dataset pipeline';
+  const phaseNames=['Phase 1 — Foundation','Phase 2 — Train & Wire','Phase 3 — Features','Phase 4 — Break It'];
+  const taskShort=stripHtml(task.text).slice(0,120)+(stripHtml(task.text).length>120?'...':'');
+  const card=document.createElement('div');
+  card.className='ctx-card';
+  card.innerHTML=`
+    <div class="ctx-card-head">
+      <div class="ctx-icon"><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="var(--purple)" stroke-width="1.2"/><path d="M4.5 4.5C4.5 3.67 5.17 3 6 3s1.5.67 1.5 1.5-.67 1.5-1.5 1.5v1M6 9h.01" stroke="var(--purple)" stroke-width="1.2" stroke-linecap="round"/></svg></div>
+      <div class="ctx-title">Context loaded — Claude knows your full setup</div>
+    </div>
+    <div class="ctx-rows">
+      <div class="ctx-row"><span class="ctx-lbl">Task</span><span class="ctx-val">${taskShort}</span></div>
+      <div class="ctx-row"><span class="ctx-lbl">Who</span><span class="ctx-val">${person} · ${phaseNames[phase]}</span></div>
+      <div class="ctx-row"><span class="ctx-lbl">Machine</span><span class="ctx-val"><code>${hw}</code></span></div>
+      <div class="ctx-row"><span class="ctx-lbl">Time</span><span class="ctx-val">${task.date} · ${task.est}</span></div>
+    </div>
+    <div class="ctx-toggle" onclick="this.nextSibling.classList.toggle('open');this.textContent=this.nextSibling.classList.contains('open')?'▲ hide full context':'▼ show full context'">▼ show full context</div>
+    <div class="ctx-extra">
+      <div class="ctx-rows">
+        <div class="ctx-row"><span class="ctx-lbl">Role</span><span class="ctx-val">${role}</span></div>
+        <div class="ctx-row"><span class="ctx-lbl">Project</span><span class="ctx-val">Local AI coding assistant · Python-only · PEP8 + type hints</span></div>
+        <div class="ctx-row"><span class="ctx-lbl">Stack</span><span class="ctx-val">PyQt GUI · FastAPI · SQLite · MLX · LoRA fine-tuning</span></div>
+        <div class="ctx-row"><span class="ctx-lbl">Models</span><span class="ctx-val">Qwen3.5-27B Distilled (MoE · 4-bit MLX · ~35 tok/s)</span></div>
+        <div class="ctx-row"><span class="ctx-lbl">Deadline</span><span class="ctx-val">May 1, 2026 · Presentation May 11</span></div>
+      </div>
+    </div>`;
+  msgs.appendChild(card);
+  msgs.scrollTop=msgs.scrollHeight;
+}
+
+function addMessage(from, text){
+  const msgs=document.getElementById('chat-messages');
+  const div=document.createElement('div');
+  div.className='msg '+(from==='claude'?'from-claude':'from-user');
+  const avClass=from==='claude'?'msg-claude':(currentUser==='k'?'msg-user-k':'msg-user-a');
+  const avText=from==='claude'?'AI':(currentUser==='k'?'KA':'AH');
+  div.innerHTML=`<div class="msg-avatar ${avClass}">${avText}</div><div class="msg-bubble">${formatMessage(text)}</div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop=msgs.scrollHeight;
+  return div;
+}
+
+function formatMessage(text){
+  // Convert markdown to HTML
+  text=text.replace(/```(\w*)\n([\s\S]*?)```/g,(m,lang,code)=>`<pre><code>${escHtml(code.trimEnd())}</code></pre>`);
+  text=text.replace(/`([^`]+)`/g,'<code>$1</code>');
+  text=text.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  text=text.replace(/\*([^*]+)\*/g,'<em>$1</em>');
+  text=text.split('\n\n').map(p=>{
+    if(p.startsWith('<pre>')||p.startsWith('<ul>')||p.startsWith('<ol>'))return p;
+    const lines=p.split('\n');
+    if(lines.every(l=>l.match(/^[-*]\s/))){
+      return '<ul>'+lines.map(l=>`<li>${l.replace(/^[-*]\s/,'')}</li>`).join('')+'</ul>';
+    }
+    if(lines.every(l=>l.match(/^\d+\.\s/))){
+      return '<ol>'+lines.map(l=>`<li>${l.replace(/^\d+\.\s/,'')}</li>`).join('')+'</ol>';
+    }
+    return `<p>${p}</p>`;
+  }).join('');
+  return text;
+}
+
+function escHtml(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function addTyping(){
+  const msgs=document.getElementById('chat-messages');
+  const div=document.createElement('div');
+  div.className='msg from-claude';
+  div.id='typing-indicator';
+  div.innerHTML=`<div class="msg-avatar msg-claude">AI</div><div class="msg-bubble"><div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div></div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop=msgs.scrollHeight;
+}
+
+function removeTyping(){const t=document.getElementById('typing-indicator');if(t)t.remove();}
+
+async function sendMessage(){
+  if(isStreaming)return;
+  const input=document.getElementById('chat-input');
+  const text=input.value.trim();
+  if(!text)return;
+  const apiKey=getApiKey();
+  if(!apiKey){openApiKeyModal();return;}
+  input.value='';
+  input.style.height='40px';
+  addMessage('user',text);
+  chatHistory.push({role:'user',content:text});
+  isStreaming=true;
+  document.getElementById('chat-send-btn').disabled=true;
+  addTyping();
+
+  try{
+    const resp=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'x-api-key':apiKey,
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true'
+      },
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:1500,
+        system:PROJECT_CONTEXT,
+        messages:chatHistory.slice(-12)
+      })
+    });
+    removeTyping();
+    if(!resp.ok){
+      const err=await resp.json().catch(()=>({}));
+      const msg=err.error?.message||`API error ${resp.status}`;
+      addMessage('claude',`**Error:** ${msg}\n\nIf this is an auth error, check your API key in the settings.`);
+      isStreaming=false;
+      document.getElementById('chat-send-btn').disabled=false;
+      return;
+    }
+    const data=await resp.json();
+    const reply=data.content?.[0]?.text||'Sorry, I got an empty response. Please try again.';
+    addMessage('claude',reply);
+    chatHistory.push({role:'assistant',content:reply});
+  }catch(err){
+    removeTyping();
+    addMessage('claude',`**Connection error:** ${err.message}\n\nMake sure you have an internet connection and a valid API key.`);
+  }
+  isStreaming=false;
+  document.getElementById('chat-send-btn').disabled=false;
+  setTimeout(()=>document.getElementById('chat-input').focus(),50);
+}
+
+function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}}
+function autoResize(el){el.style.height='40px';el.style.height=Math.min(el.scrollHeight,120)+'px';}
+
+// ═══════════════════════════════════════════
+// EXPORT / IMPORT / RESET
+// ═══════════════════════════════════════════
+function exportData(){
+  const state=getState();
+  const json=JSON.stringify(state,null,2);
+  const blob=new Blob([json],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download='roadmap_progress.json';a.click();
+  URL.revokeObjectURL(url);
+  showToast('Progress exported!');
+}
+function openImportModal(){document.getElementById('import-overlay').classList.add('open');}
+function closeImportModal(){document.getElementById('import-overlay').classList.remove('open');document.getElementById('import-text').value='';}
+function doImport(){
+  try{
+    const data=JSON.parse(document.getElementById('import-text').value);
+    saveState(data);applyState(data);updateProgress();closeImportModal();
+    showToast('Progress imported!');
+  }catch(e){alert('Invalid JSON. Please paste the exact exported text.');}
+}
+function confirmReset(){
+  if(confirm('Reset ALL checkboxes? This cannot be undone.')){
+    saveState({});applyState({});updateProgress();showToast('All progress reset.');
+  }
+}
+
+function showToast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg;t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2500);
+}
+
+// ═══════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════
+renderTasks();
+const state=getState();
+applyState(state);
+updateProgress();
+checkApiKey();
+</script>
+</body>
+</html>
