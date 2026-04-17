@@ -1,3 +1,61 @@
+"""
+FoxAI Studio - Main Application Entry Point
+
+ARCHITECTURE OVERVIEW:
+======================
+FoxAI Studio is a dual-mode AI coding assistant with two distinct interfaces:
+
+1. USER MODE (default):
+   - Clean, minimal interface for chatting with the AI
+   - System prompt customization
+   - Chat history management
+   - Theme selection (dark/light)
+   - Access to Settings panel
+
+2. DEV MODE (password: "123"):
+   - Advanced developer panel with 5 tabs:
+     * RAG Indexer: Index project files, PDFs, DOCX, ZIM archives
+     * Fine-tune: Configure and run LoRA fine-tuning
+     * Model: Select and load different MLX models
+     * Testing: Run AST benchmarks, stress tests, RAM monitoring
+     * Unrestricted: Bypass "ask before acting" safety rule
+
+KEY DESIGN PATTERNS:
+===================
+1. QThread for non-blocking AI generation
+   - AIWorker runs model inference in background thread
+   - Emits signals for streaming tokens: new_token, finished, error
+   - Prevents GUI freezing during generation
+
+2. MemoryMonitor for real-time system stats
+   - Tracks app RAM usage and CPU percentage
+   - Updates every 2 seconds via QTimer in worker thread
+
+3. RAG Integration
+   - FAISS vector index for semantic search
+   - sentence-transformers for embeddings
+   - Supports: code files, PDFs, DOCX, ZIM archives
+
+4. System Prompt Safety
+   - Default: "Ask Before Acting" - AI must clarify before coding
+   - Unrestricted Mode: AI generates code directly (dev mode only)
+
+HOW THE CHAT LOOP WORKS:
+=========================
+1. User types message → soru_sor()
+2. Message displayed in chat bubble
+3. RAG query (if enabled) → context injection
+4. Build prompt with chat history
+5. Start AIWorker thread
+6. Stream tokens to UI as they arrive (new_token signal)
+7. On completion: display stats, update chat history
+
+ENTRY POINT:
+============
+To run: python main.py
+Model path is hardcoded at bottom of file.
+"""
+
 import sys
 import os
 import time
@@ -20,88 +78,167 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
 from PyQt5.QtGui import QFont, QColor, QTextCursor, QPalette, QIcon
 
+# mlx_lm: Apple's MLX framework for local LLM inference
+# - load(): Load a model and tokenizer from a path
+# - generate(): Generate text (blocking)
+# - stream_generate(): Generate text with streaming (yields tokens)
 from mlx_lm import load, generate, stream_generate
 
+# RAG Engine: Handles document indexing and retrieval
+# Fine-tune Engine: Handles LoRA training
 try:
     from rag_engine import RAGEngine
     from finetune_engine import FinetuneEngine
 except ImportError:
     pass
 
+# Application version and dev mode password
 VERSION = "FoxAI - Studio Edition"
 DEV_MODE_PASSWORD = "123"
 
 # ---------------------------------------------------------
-# WORKERS
+# WORKER THREADS (Background Processing)
 # ---------------------------------------------------------
+
 class AIWorker(QThread):
-    """Handles text generation with token streaming."""
+    """
+    Background thread for AI text generation.
+
+    WHY A THREAD?
+    - LLM generation can take seconds to minutes
+    - Blocking the main thread would freeze the GUI
+    - QThread allows concurrent execution with GUI event loop
+
+    SIGNALS:
+    - new_token(str): Emitted for each new token (for streaming display)
+    - finished(str, float, int, float): Emitted when generation completes
+    - error(str): Emitted if an exception occurs
+
+    HOW STREAMING WORKS:
+    - stream_generate() yields accumulated response
+    - We track previous response length to extract NEW tokens only
+    - Each new token is emitted via signal for live UI updates
+    """
+    # Signal emitted when a new token is generated (for streaming)
     new_token = pyqtSignal(str)
+    # Signal emitted when generation completes: (full_response, tokens_per_sec, total_tokens, elapsed_time)
     finished = pyqtSignal(str, float, int, float)
+    # Signal emitted on error: error message
     error = pyqtSignal(str)
 
     def __init__(self, model, tokenizer, prompt):
+        """
+        Initialize the worker thread.
+
+        ARGS:
+            model: The loaded MLX model instance
+            tokenizer: The tokenizer for the model
+            prompt: The formatted prompt string to generate from
+        """
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
         self.prompt = prompt
-        self.is_running = True
+        self.is_running = True  # Can be set False to stop generation
 
     def run(self):
+        """
+        Main thread execution - generates text and emits signals.
+
+        This method runs in a separate thread when start() is called.
+        DO NOT call this directly - use start() instead.
+        """
         try:
             start_time = time.time()
             full_response = ""
             token_count = 0
-            
+
+            # Iterate through streaming response
+            # stream_generate yields accumulated text, not individual tokens
             for response in stream_generate(self.model, self.tokenizer, prompt=self.prompt, max_tokens=1500):
+                # Check if stop was requested (e.g., user clicked stop button)
                 if not self.is_running:
                     break
-                
-                # In mlx_lm.stream_generate, the response is typically the accumulated text
-                # We want just the new part
+
+                # Extract just the NEW portion since last iteration
+                # response is cumulative, so len(full_response) gives us where we left off
                 new_part = response[len(full_response):]
                 full_response = response
                 token_count += 1
+
+                # Emit new token for live display
                 self.new_token.emit(new_part)
-            
+
+            # Calculate metrics
             end_time = time.time()
             elapsed = end_time - start_time
             tok_per_sec = token_count / elapsed if elapsed > 0 else 0.0
 
+            # Emit completion signal with results
             self.finished.emit(full_response, tok_per_sec, token_count, elapsed)
+
         except Exception as e:
+            # Emit error signal if something goes wrong
             self.error.emit(f"Error generating response: {str(e)}")
 
     def stop(self):
+        """
+        Request the worker to stop generation.
+
+        Sets is_running to False, which causes the loop in run() to break.
+        Note: The model may still produce a few more tokens after stop is called.
+        """
         self.is_running = False
 
+
 class MemoryMonitor(QThread):
-    update_signal = pyqtSignal(str, str) # ram_gb, sys_load
-    
+    """
+    Background thread for monitoring system resources.
+
+    WHY SEPARATE THREAD?
+    - psutil calls can be slow
+    - We want to update every 2 seconds without affecting UI responsiveness
+
+    SIGNALS:
+    - update_signal(str, str): Emits (ram_usage_gb, cpu_percent)
+    """
+    update_signal = pyqtSignal(str, str)  # (ram_gb, sys_load)
+
     def run(self):
+        """
+        Continuous monitoring loop - runs until thread is stopped.
+
+        Gets current process memory and system CPU percentage,
+        then sleeps for 2 seconds before repeating.
+        """
         process = psutil.Process(os.getpid())
         while True:
             try:
-                # App memory usage
+                # Get memory info for THIS process only
                 mem_info = process.memory_info()
-                used_gb = mem_info.rss / (1024 ** 3)
-                
-                # System overall CPU percentage
+                used_gb = mem_info.rss / (1024 ** 3)  # Convert bytes to GB
+
+                # Get system-wide CPU usage percentage
+                # interval=None uses cached value (faster, less accurate)
+                # For real-time accuracy, use interval=1 (blocks for 1 second)
                 cpu_percent = psutil.cpu_percent(interval=None)
-                
+
+                # Emit update signal with formatted strings
                 self.update_signal.emit(f"{used_gb:.2f} GB", f"{cpu_percent}%")
             except:
-                pass
+                pass  # Ignore errors, try again next iteration
             time.sleep(2)
 
 # ---------------------------------------------------------
 # SETTINGS & ROADMAP VIEWER
 # ---------------------------------------------------------
 class SettingsDialog(QDialog):
-    def __init__(self, parent=None, current_prompt="", current_theme="dark"):
+    def __init__(self, parent=None, user_prompt="", current_theme="dark"):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setFixedSize(550, 500)
+        self.main_app = parent  # Reference to main window for saving
+
         self.setStyleSheet("""
             QDialog { background-color: #161616; color: #e0e0e0; }
             QLabel { color: #ccc; }
@@ -109,57 +246,63 @@ class SettingsDialog(QDialog):
             QPushButton:hover { background-color: #333; }
             QRadioButton { color: #ccc; spacing: 8px; }
         """)
-        
-        self.final_prompt = current_prompt
+
+        self.final_user_prompt = user_prompt
         self.final_theme = current_theme
-        
+
         layout = QVBoxLayout(self)
-        
+
         # Header
         header = QLabel("Settings")
         header.setStyleSheet("font-size: 18px; font-weight: bold; color: #7c4dff; padding: 10px;")
         layout.addWidget(header)
-        
-        # System Prompt Section
-        layout.addWidget(QLabel("<b>System Prompt:</b>"))
+
+        # User Prompt Section (NOT system prompt - that's Dev Mode only)
+        layout.addWidget(QLabel("<b>User Prompt (Personality):</b>"))
         self.prompt_edit = QPlainTextEdit()
-        self.prompt_edit.setPlainText(current_prompt)
+        self.prompt_edit.setPlainText(user_prompt)
+        self.prompt_edit.setPlaceholderText("This prompt defines how the AI responds to you...")
         self.prompt_edit.setStyleSheet("background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 8px; color: #ddd;")
-        self.prompt_edit.setMinimumHeight(150)
+        self.prompt_edit.setMinimumHeight(120)
         layout.addWidget(self.prompt_edit)
-        
+
         layout.addSpacing(10)
-        
+
         # Theme Section
         layout.addWidget(QLabel("<b>Theme:</b>"))
         theme_layout = QHBoxLayout()
         self.rb_dark = QRadioButton("🌙 Dark Studio")
         self.rb_light = QRadioButton("☀️ Light")
-        
+
         if current_theme == "dark": self.rb_dark.setChecked(True)
         else: self.rb_light.setChecked(True)
-            
+
         theme_layout.addWidget(self.rb_dark)
         theme_layout.addWidget(self.rb_light)
         theme_layout.addStretch()
         layout.addLayout(theme_layout)
-        
+
         layout.addSpacing(15)
-        
+
         # Roadmap Button
         roadmap_btn = QPushButton("📋 View Project Roadmap")
         roadmap_btn.setStyleSheet("background-color: #1a3a5c; color: #4d9fff;")
         roadmap_btn.clicked.connect(self.show_roadmap)
         layout.addWidget(roadmap_btn)
-        
+
+        # Dev Mode Note
+        dev_note = QLabel("🔒 System prompt is only editable in Dev Mode (Settings → Dev Mode)")
+        dev_note.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
+        layout.addWidget(dev_note)
+
         layout.addStretch()
-        
+
         # Bottom Buttons
         btn_layout = QHBoxLayout()
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
-        
+
         save_btn = QPushButton("Save & Apply")
         save_btn.setStyleSheet("background-color: #1a5c3a; color: #4dff9f;")
         save_btn.clicked.connect(self.accept_settings)
@@ -167,8 +310,16 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def accept_settings(self):
-        self.final_prompt = self.prompt_edit.toPlainText()
+        # Save user_prompt to prompts.json via main app
+        self.final_user_prompt = self.prompt_edit.toPlainText()
         self.final_theme = "dark" if self.rb_dark.isChecked() else "light"
+
+        # Update main app's user_prompt
+        if self.main_app and hasattr(self.main_app, 'prompts'):
+            self.main_app.prompts["user_prompt"] = self.final_user_prompt
+            self.main_app.save_prompts(self.main_app.prompts)
+            self.main_app.user_prompt = self.final_user_prompt
+
         self.accept()
 
     def show_roadmap(self):
@@ -775,32 +926,83 @@ class ChatbotGUI(QWidget):
             self.rag_engine = RAGEngine()
         except:
             self.rag_engine = None
-        
-        self.original_system_prompt = """You are FoxAI, a local expert AI pair-programmer. 
-Your core rule is: **ASK BEFORE ACTING**.
 
-Before writing any code or providing a solution, you MUST:
-1. List EVERY unclear point or assumption in the user's request.
-2. Ask the user to clarify these points one by one.
-3. DO NOT write a single line of code until all questions are answered and the requirements are 100% clear.
+        # Load prompts from JSON configuration file
+        # system_prompt: Only editable in Dev Mode (safety feature)
+        # user_prompt: Editable by regular users in Settings
+        self.prompts = self.load_prompts()
 
-Style rules:
-- Write production-grade, PEP8-compliant Python code.
-- Use type hints for all functions.
-- Be concise but thorough in your explanations.
-"""
+        self.original_system_prompt = self.prompts.get("system_prompt", "")
         self.system_prompt = self.original_system_prompt
-        
+        self.user_prompt = self.prompts.get("user_prompt", "You are a helpful assistant.")
+
         # Chat Sessions Storage Mock
         self.chats = {"Default Chat": [{"role": "system", "content": self.system_prompt}]}
         self.active_chat = "Default Chat"
-        
+
         self.init_ui()
-        
+
         # Start HW Monitor
         self.mem_thread = MemoryMonitor()
         self.mem_thread.update_signal.connect(self.update_hw_stats)
         self.mem_thread.start()
+
+    def load_prompts(self) -> dict:
+        """
+        Load prompts from prompts.json configuration file.
+
+        PROMPTS STRUCTURE:
+        - system_prompt: Developer-only prompt (editable only in Dev Mode)
+        - user_prompt: User-facing prompt (editable in Settings by regular users)
+        - unrestricted_prompt: Used when Unrestricted Mode is enabled (Dev Mode only)
+
+        If prompts.json doesn't exist, returns default prompts and creates the file.
+
+        Returns:
+            dict with keys: system_prompt, user_prompt, unrestricted_prompt
+        """
+        prompts_path = os.path.join(os.path.dirname(__file__), "prompts.json")
+        default_prompts = {
+            "system_prompt": "You are FoxAI, a local expert AI pair-programmer.\nYour core rule is: **ASK BEFORE ACTING**.\n\nBefore writing any code or providing a solution, you MUST:\n1. List EVERY unclear point or assumption in the user's request.\n2. Ask the user to clarify these points one by one.\n3. DO NOT write a single line of code until all questions are answered and the requirements are 100% clear.\n\nStyle rules:\n- Write production-grade, PEP8-compliant Python code.\n- Use type hints for all functions.\n- Be concise but thorough in your explanations.",
+            "user_prompt": "You are a helpful AI assistant. Provide clear, concise, and accurate responses to the user's questions. Be friendly and professional.",
+            "unrestricted_prompt": "You are FoxAI, a helpful assistant. Answer directly without asking questions."
+        }
+
+        try:
+            if os.path.exists(prompts_path):
+                with open(prompts_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            else:
+                # Create default prompts.json if it doesn't exist
+                with open(prompts_path, 'w', encoding='utf-8') as f:
+                    json.dump(default_prompts, f, indent=4)
+                return default_prompts
+        except Exception as e:
+            print(f"Error loading prompts: {e}")
+            return default_prompts
+
+    def save_prompts(self, prompts: dict) -> bool:
+        """
+        Save prompts to prompts.json file.
+
+        USED BY:
+        - Dev Mode: When developer changes system_prompt or unrestricted_prompt
+        - Settings: When user changes user_prompt
+
+        Args:
+            prompts: dict with system_prompt, user_prompt, unrestricted_prompt
+
+        Returns:
+            True if successful, False otherwise
+        """
+        prompts_path = os.path.join(os.path.dirname(__file__), "prompts.json")
+        try:
+            with open(prompts_path, 'w', encoding='utf-8') as f:
+                json.dump(prompts, f, indent=4)
+            return True
+        except Exception as e:
+            print(f"Error saving prompts: {e}")
+            return False
 
     def init_ui(self):
         self.setWindowTitle(VERSION)
@@ -1113,13 +1315,12 @@ Style rules:
         self.lbl_ram_pct.setText(f"⚙ {ram_pct}")
 
     def open_settings(self):
-        diag = SettingsDialog(self, self.system_prompt)
+        # Pass user_prompt only - system_prompt is NOT editable in regular Settings
+        diag = SettingsDialog(self, self.user_prompt)
         if diag.exec_():
-            self.system_prompt = diag.final_prompt
-            self.original_system_prompt = diag.final_prompt
-            if self.chats[self.active_chat] and self.chats[self.active_chat][0]["role"] == "system":
-                self.chats[self.active_chat][0]["content"] = self.system_prompt
-    
+            # user_prompt is saved inside accept_settings() via save_prompts()
+            pass  # No system prompt changes from Settings - that's Dev Mode only
+
     def open_dev_panel(self):
         if not dev_mode_gate.unlocked:
             password, ok = QInputDialog.getText(self, "Dev Mode", "Enter developer password:")
