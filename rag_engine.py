@@ -33,7 +33,7 @@ class RAGEngine:
         # Initialize chroma db
         self.db = Chroma(persist_directory=DB_DIR, embedding_function=self.embeddings)
 
-    def process_file(self, file_path: str) -> List[Document]:
+    def process_file(self, file_path: str) -> List['Document']:
         """Loads a file based on its extension and returns splitted documents."""
         if not self.enabled: return []
         
