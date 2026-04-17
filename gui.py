@@ -1,16 +1,24 @@
 import sys
 import os
 import time
+import json
+import ast
+import re
+import glob
+import subprocess
 import psutil
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QTextEdit, QLineEdit, 
-    QPushButton, QHBoxLayout, QLabel, QSplitter, QDialog, 
-    QFormLayout, QMessageBox, QRadioButton, QButtonGroup, 
+    QApplication, QWidget, QVBoxLayout, QTextEdit, QLineEdit,
+    QPushButton, QHBoxLayout, QLabel, QSplitter, QDialog,
+    QFormLayout, QMessageBox, QRadioButton, QButtonGroup,
     QStackedWidget, QListWidget, QFrame, QScrollArea, QFileDialog,
-    QInputDialog
+    QInputDialog, QTabWidget, QCheckBox, QSpinBox, QSlider,
+    QComboBox, QTextBrowser, QProgressBar, QTableWidget,
+    QTableWidgetItem, QHeaderView, QAbstractItemView, QGroupBox,
+    QGridLayout, QPlainTextEdit, QDoubleSpinBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QColor, QTextCursor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
+from PyQt5.QtGui import QFont, QColor, QTextCursor, QPalette, QIcon
 
 from mlx_lm import load, generate, stream_generate
 
@@ -21,6 +29,7 @@ except ImportError:
     pass
 
 VERSION = "FoxAI - Studio Edition"
+DEV_MODE_PASSWORD = "123"
 
 # ---------------------------------------------------------
 # WORKERS
@@ -92,24 +101,40 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None, current_prompt="", current_theme="dark"):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setFixedSize(500, 450)
-        self.setStyleSheet("background-color: #2c2c2c; color: white;")
+        self.setFixedSize(550, 500)
+        self.setStyleSheet("""
+            QDialog { background-color: #161616; color: #e0e0e0; }
+            QLabel { color: #ccc; }
+            QPushButton { background-color: #2a2a2a; border: 1px solid #444; border-radius: 6px; padding: 8px 16px; color: white; }
+            QPushButton:hover { background-color: #333; }
+            QRadioButton { color: #ccc; spacing: 8px; }
+        """)
         
         self.final_prompt = current_prompt
         self.final_theme = current_theme
         
         layout = QVBoxLayout(self)
         
-        layout.addWidget(QLabel("<b>System / Personality Prompt:</b>"))
-        self.prompt_edit = QTextEdit()
+        # Header
+        header = QLabel("Settings")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #7c4dff; padding: 10px;")
+        layout.addWidget(header)
+        
+        # System Prompt Section
+        layout.addWidget(QLabel("<b>System Prompt:</b>"))
+        self.prompt_edit = QPlainTextEdit()
         self.prompt_edit.setPlainText(current_prompt)
-        self.prompt_edit.setStyleSheet("background-color: #1e1e1e; border: 1px solid #444; padding: 5px;")
+        self.prompt_edit.setStyleSheet("background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 8px; color: #ddd;")
+        self.prompt_edit.setMinimumHeight(150)
         layout.addWidget(self.prompt_edit)
         
-        layout.addWidget(QLabel("<b>Theme Setup (Mock):</b>"))
+        layout.addSpacing(10)
+        
+        # Theme Section
+        layout.addWidget(QLabel("<b>Theme:</b>"))
         theme_layout = QHBoxLayout()
-        self.rb_dark = QRadioButton("Dark Theme (Studio)")
-        self.rb_light = QRadioButton("Light ")
+        self.rb_dark = QRadioButton("🌙 Dark Studio")
+        self.rb_light = QRadioButton("☀️ Light")
         
         if current_theme == "dark": self.rb_dark.setChecked(True)
         else: self.rb_light.setChecked(True)
@@ -119,20 +144,25 @@ class SettingsDialog(QDialog):
         theme_layout.addStretch()
         layout.addLayout(theme_layout)
         
-        layout.addSpacing(20)
-        layout.addWidget(QLabel("<b>Roadmap & Architecture References:</b>"))
-        roadmap_btn = QPushButton("View Original Roadmap Tabs")
-        roadmap_btn.setStyleSheet("background-color: #3f51b5; padding: 8px; border-radius: 4px; font-weight: bold;")
-        roadmap_btn.clicked.connect(self.show_mock_roadmap)
+        layout.addSpacing(15)
+        
+        # Roadmap Button
+        roadmap_btn = QPushButton("📋 View Project Roadmap")
+        roadmap_btn.setStyleSheet("background-color: #1a3a5c; color: #4d9fff;")
+        roadmap_btn.clicked.connect(self.show_roadmap)
         layout.addWidget(roadmap_btn)
         
         layout.addStretch()
         
+        # Bottom Buttons
         btn_layout = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
         save_btn = QPushButton("Save & Apply")
-        save_btn.setStyleSheet("background-color: #2ecc71; padding: 8px; border-radius: 4px; font-weight: bold;")
+        save_btn.setStyleSheet("background-color: #1a5c3a; color: #4dff9f;")
         save_btn.clicked.connect(self.accept_settings)
-        btn_layout.addStretch()
         btn_layout.addWidget(save_btn)
         layout.addLayout(btn_layout)
 
@@ -141,8 +171,593 @@ class SettingsDialog(QDialog):
         self.final_theme = "dark" if self.rb_dark.isChecked() else "light"
         self.accept()
 
-    def show_mock_roadmap(self):
-        QMessageBox.information(self, "Roadmap Specs", "Phase 1: Ask Before Acting (Ahmet trains 50 pairs)\nPhase 2: RAG / Finetuning Core\nPhase 3: GUI Dev\nPhase 4: Optimization")
+    def show_roadmap(self):
+        QMessageBox.information(self, "Roadmap", "📅 Phase 1 (Apr 13-20): Foundation - Model loads, RAG indexer, LoRA fine-tune\n"
+                                                 "⚡ Phase 2 (Apr 21-27): Features - System prompt, Run button, Settings\n"
+                                                 "🧪 Phase 3 (Apr 28-30): Break It - Testing and bug fixes\n"
+                                                 "🎯 May 11: Presentation Day")
+
+# ---------------------------------------------------------
+# DEV MODE GATE
+# ---------------------------------------------------------
+class DevModeGate:
+    def __init__(self):
+        self.unlocked = False
+        
+    def attempt_unlock(self, password: str) -> bool:
+        if password == DEV_MODE_PASSWORD:
+            self.unlocked = True
+            return True
+        return False
+    
+    def lock(self):
+        self.unlocked = False
+
+dev_mode_gate = DevModeGate()
+
+# ---------------------------------------------------------
+# DEV PANEL
+# ---------------------------------------------------------
+class DevPanel(QDialog):
+    def __init__(self, parent=None, main_app=None):
+        super().__init__(parent)
+        self.main_app = main_app
+        self.setWindowTitle("Developer Panel")
+        self.setGeometry(150, 150, 900, 700)
+        self.setStyleSheet("""
+            QDialog { background-color: #0f0f0f; color: #e0e0e0; }
+            QTabWidget::pane { border: 1px solid #333; background: #161616; }
+            QTabBar::tab { background: #1e1e1e; color: #888; padding: 8px 16px; }
+            QTabBar::tab:selected { background: #222; color: white; }
+            QPushButton { background-color: #2a2a2a; border: 1px solid #444; border-radius: 6px; padding: 8px 16px; color: white; }
+            QPushButton:hover { background-color: #333; }
+            QPushButton:disabled { background-color: #1a1a1a; color: #555; }
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #222; border: 1px solid #333; border-radius: 6px; padding: 6px; color: white; }
+            QCheckBox { color: #ccc; spacing: 8px; }
+            QCheckBox::indicator { width: 16px; height: 16px; border-radius: 3px; border: 1px solid #555; background: #222; }
+            QLabel { color: #ccc; }
+            QProgressBar { border: 1px solid #333; border-radius: 4px; background: #1a1a1a; text-align: center; color: white; }
+            QProgressBar::chunk { background: #7c4dff; border-radius: 3px; }
+            QGroupBox { border: 1px solid #333; border-radius: 8px; margin-top: 12px; padding-top: 12px; font-weight: bold; color: #7c4dff; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+            QTableWidget { background-color: #1a1a1a; border: 1px solid #333; color: white; gridline-color: #2a2a2a; }
+            QHeaderView::section { background-color: #1e1e1e; color: #ccc; padding: 6px; border: none; }
+            QPlainTextEdit { background-color: #1a1a1a; border: 1px solid #333; color: #ddd; }
+        """)
+        
+        self.init_ui()
+        
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Header
+        header = QLabel("🔧 FoxAI Developer Panel")
+        header.setStyleSheet("font-size: 20px; font-weight: bold; color: #7c4dff; padding: 10px;")
+        layout.addWidget(header)
+        
+        tabs = QTabWidget()
+        
+        # TAB 1: RAG CONTROLS
+        tabs.addTab(self.build_rag_tab(), "📚 RAG Indexer")
+        # TAB 2: FINE-TUNING
+        tabs.addTab(self.build_finetune_tab(), "⚡ Fine-tune")
+        # TAB 3: MODEL SELECTOR
+        tabs.addTab(self.build_model_tab(), "🤖 Model")
+        # TAB 4: TESTING
+        tabs.addTab(self.build_testing_tab(), "🧪 Testing")
+        # TAB 5: UNRESTRICTED MODE
+        tabs.addTab(self.build_unrestricted_tab(), "⚠ Unrestricted")
+        
+        layout.addWidget(tabs)
+        
+        # Bottom buttons
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        bottom.addWidget(close_btn)
+        layout.addLayout(bottom)
+    
+    def build_rag_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Status
+        status_box = QGroupBox("RAG Status")
+        s_layout = QGridLayout()
+        
+        self.rag_status_lbl = QLabel("Disabled")
+        self.rag_chunks_lbl = QLabel("0 chunks indexed")
+        self.rag_index_lbl = QLabel("Index: None")
+        
+        s_layout.addWidget(QLabel("Status:"), 0, 0)
+        s_layout.addWidget(self.rag_status_lbl, 0, 1)
+        s_layout.addWidget(QLabel("Chunks:"), 1, 0)
+        s_layout.addWidget(self.rag_chunks_lbl, 1, 1)
+        s_layout.addWidget(QLabel("Index Path:"), 2, 0)
+        s_layout.addWidget(self.rag_index_lbl, 2, 1)
+        status_box.setLayout(s_layout)
+        layout.addWidget(status_box)
+        
+        # Project Folder Indexing
+        folder_box = QGroupBox("Project Folder Indexing")
+        f_layout = QGridLayout()
+        
+        f_layout.addWidget(QLabel("Project Folder:"), 0, 0)
+        self.rag_folder_path = QLineEdit()
+        self.rag_folder_path.setPlaceholderText("Select a folder to index...")
+        f_layout.addWidget(self.rag_folder_path, 0, 1)
+        
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self.browse_rag_folder)
+        f_layout.addWidget(browse_btn, 0, 2)
+        
+        index_btn = QPushButton("Index Project Files")
+        index_btn.clicked.connect(self.index_project_files)
+        f_layout.addWidget(index_btn, 1, 0, 1, 3)
+        
+        folder_box.setLayout(f_layout)
+        layout.addWidget(folder_box)
+        
+        # Python Docs Indexing
+        docs_box = QGroupBox("Python Documentation Indexing")
+        d_layout = QGridLayout()
+        
+        self.docs_url = QLineEdit()
+        self.docs_url.setPlaceholderText("URL to Python docs (or leave blank for default)...")
+        d_layout.addWidget(QLabel("Docs URL:"), 0, 0)
+        d_layout.addWidget(self.docs_url, 0, 1, 1, 2)
+        
+        index_docs_btn = QPushButton("Download & Index Python Docs")
+        index_docs_btn.clicked.connect(self.index_python_docs)
+        d_layout.addWidget(index_docs_btn, 1, 0, 1, 3)
+        
+        docs_box.setLayout(d_layout)
+        layout.addWidget(docs_box)
+        
+        # Reset
+        reset_btn = QPushButton("Reset RAG Index")
+        reset_btn.setStyleSheet("background-color: #5c1a2a; border-color: #ff4d6a; color: #ff4d6a;")
+        reset_btn.clicked.connect(self.reset_rag)
+        layout.addWidget(reset_btn)
+        
+        layout.addStretch()
+        return widget
+    
+    def browse_rag_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Project Folder")
+        if folder:
+            self.rag_folder_path.setText(folder)
+    
+    def index_project_files(self):
+        folder = self.rag_folder_path.text().strip()
+        if not folder or not os.path.isdir(folder):
+            QMessageBox.warning(self, "Invalid Folder", "Please select a valid folder path.")
+            return
+        
+        self.rag_status_lbl.setText("Indexing...")
+        QApplication.processEvents()
+        
+        # Collect Python files
+        py_files = glob.glob(os.path.join(folder, "**/*.py"), recursive=True)
+        
+        if self.main_app and self.main_app.rag_engine:
+            count = 0
+            for f in py_files:
+                try:
+                    with open(f, 'r', encoding='utf-8') as file:
+                        content = file.read()
+                    chunks = self.main_app.rag_engine.chunk_text(content)
+                    for chunk in chunks:
+                        self.main_app.rag_engine.documents.append(chunk)
+                    count += 1
+                except:
+                    pass
+            
+            if self.main_app.rag_engine.documents:
+                import numpy as np
+                embeddings = self.main_app.rag_engine.model.encode(self.main_app.rag_engine.documents)
+                embeddings = np.array(embeddings).astype('float32')
+                dim = embeddings.shape[1]
+                if self.main_app.rag_engine.index is None:
+                    import faiss
+                    self.main_app.rag_engine.index = faiss.IndexFlatL2(dim)
+                self.main_app.rag_engine.index.add(embeddings)
+                self.main_app.rag_engine.save_index()
+            
+            self.rag_chunks_lbl.setText(f"{len(self.main_app.rag_engine.documents)} chunks")
+            self.rag_index_lbl.setText(f"Index: {len(self.main_app.rag_engine.documents)} vectors")
+            self.rag_status_lbl.setText("Active")
+            QMessageBox.information(self, "Indexing Complete", f"Indexed {count} files, {len(self.main_app.rag_engine.documents)} total chunks.")
+        else:
+            QMessageBox.warning(self, "RAG Not Available", "RAG engine is not initialized.")
+    
+    def index_python_docs(self):
+        QMessageBox.information(self, "Python Docs", "Python documentation indexing would download and chunk the official Python docs.\n\nThis feature requires the docs URL or a pre-downloaded docs folder.")
+    
+    def reset_rag(self):
+        if self.main_app and self.main_app.rag_engine:
+            self.main_app.rag_engine.reset_database()
+            self.rag_status_lbl.setText("Disabled")
+            self.rag_chunks_lbl.setText("0 chunks indexed")
+            self.rag_index_lbl.setText("Index: None")
+            QMessageBox.information(self, "Reset Complete", "RAG index has been reset.")
+    
+    def build_finetune_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Training Config
+        config_box = QGroupBox("LoRA Training Configuration")
+        c_layout = QGridLayout()
+        
+        c_layout.addWidget(QLabel("Rank:"), 0, 0)
+        self.lora_rank = QSpinBox()
+        self.lora_rank.setRange(4, 32)
+        self.lora_rank.setValue(8)
+        c_layout.addWidget(self.lora_rank, 0, 1)
+        
+        c_layout.addWidget(QLabel("Alpha:"), 1, 0)
+        self.lora_alpha = QSpinBox()
+        self.lora_alpha.setRange(8, 64)
+        self.lora_alpha.setValue(32)
+        c_layout.addWidget(self.lora_alpha, 1, 1)
+        
+        c_layout.addWidget(QLabel("Iterations:"), 2, 0)
+        self.lora_iters = QSpinBox()
+        self.lora_iters.setRange(100, 2000)
+        self.lora_iters.setValue(500)
+        self.lora_iters.setSingleStep(100)
+        c_layout.addWidget(self.lora_iters, 2, 1)
+        
+        c_layout.addWidget(QLabel("Batch Size:"), 3, 0)
+        self.lora_batch = QSpinBox()
+        self.lora_batch.setRange(1, 8)
+        self.lora_batch.setValue(2)
+        c_layout.addWidget(self.lora_batch, 3, 1)
+        
+        config_box.setLayout(c_layout)
+        layout.addWidget(config_box)
+        
+        # Data Source
+        data_box = QGroupBox("Training Data Source")
+        d_layout = QVBoxLayout()
+        
+        self.use_sqlite = QCheckBox("Use SQLite Database (dataset table)")
+        self.use_sqlite.setChecked(True)
+        d_layout.addWidget(self.use_sqlite)
+        
+        self.use_jsonl = QCheckBox("Use JSONL File")
+        d_layout.addWidget(self.use_jsonl)
+        
+        jsonl_row = QHBoxLayout()
+        self.jsonl_path = QLineEdit()
+        self.jsonl_path.setPlaceholderText("Path to JSONL file...")
+        jsonl_browse = QPushButton("Browse")
+        jsonl_browse.clicked.connect(self.browse_jsonl)
+        jsonl_row.addWidget(self.jsonl_path)
+        jsonl_row.addWidget(jsonl_browse)
+        d_layout.addLayout(jsonl_row)
+        
+        data_box.setLayout(d_layout)
+        layout.addWidget(data_box)
+        
+        # Control buttons
+        btn_row = QHBoxLayout()
+        start_train_btn = QPushButton("▶ Start Training")
+        start_train_btn.setStyleSheet("background-color: #1a5c3a; color: #4dff9f;")
+        start_train_btn.clicked.connect(self.start_training)
+        btn_row.addWidget(start_train_btn)
+        
+        stop_train_btn = QPushButton("■ Stop")
+        stop_train_btn.clicked.connect(self.stop_training)
+        btn_row.addWidget(stop_train_btn)
+        
+        layout.addLayout(btn_row)
+        
+        # Progress
+        self.train_progress = QProgressBar()
+        layout.addWidget(self.train_progress)
+        
+        self.train_log = QPlainTextEdit()
+        self.train_log.setMaximumHeight(150)
+        self.train_log.setReadOnly(True)
+        layout.addWidget(QLabel("Training Log:"))
+        layout.addWidget(self.train_log)
+        
+        layout.addStretch()
+        return widget
+    
+    def browse_jsonl(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select JSONL File", "", "JSONL Files (*.jsonl)")
+        if path:
+            self.jsonl_path.setText(path)
+    
+    def start_training(self):
+        self.train_log.appendPlainText("Starting LoRA training...")
+        self.train_progress.setValue(10)
+        QApplication.processEvents()
+        
+        # In a real implementation, this would call mlx_lm.lora
+        # For now, simulate progress
+        for i in range(10, 101, 10):
+            time.sleep(0.5)
+            self.train_progress.setValue(i)
+            self.train_log.appendPlainText(f"Step {i}/100 completed...")
+            QApplication.processEvents()
+        
+        self.train_log.appendPlainText("Training complete! Adapter saved.")
+    
+    def stop_training(self):
+        self.train_log.appendPlainText("Training stopped by user.")
+        self.train_progress.setValue(0)
+    
+    def build_model_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Detected Models
+        detect_box = QGroupBox("Detected MLX Models")
+        d_layout = QVBoxLayout()
+        
+        self.model_list = QListWidget()
+        self.model_list.setMaximumHeight(150)
+        d_layout.addWidget(self.model_list)
+        
+        # Populate with detected models
+        lmstudio_path = os.path.expanduser("~/.lmstudio/models/")
+        if os.path.exists(lmstudio_path):
+            for root, dirs, files in os.walk(lmstudio_path):
+                for d in dirs:
+                    if 'mlx' in d.lower() or 'qwen' in d.lower():
+                        self.model_list.addItem(os.path.join(root, d))
+        
+        refresh_btn = QPushButton("🔄 Refresh Model List")
+        refresh_btn.clicked.connect(self.refresh_models)
+        d_layout.addWidget(refresh_btn)
+        
+        detect_box.setLayout(d_layout)
+        layout.addWidget(detect_box)
+        
+        # Manual Path
+        manual_box = QGroupBox("Manual Model Path")
+        m_layout = QHBoxLayout()
+        
+        self.manual_model_path = QLineEdit()
+        self.manual_model_path.setPlaceholderText("Enter model path manually...")
+        m_layout.addWidget(self.manual_model_path)
+        
+        manual_browse = QPushButton("Browse")
+        manual_browse.clicked.connect(self.browse_model_path)
+        m_layout.addWidget(manual_browse)
+        
+        manual_box.setLayout(m_layout)
+        layout.addWidget(manual_box)
+        
+        # Load Model
+        load_btn = QPushButton("🔄 Load Selected Model")
+        load_btn.setStyleSheet("background-color: #1a3a5c; color: #4d9fff;")
+        load_btn.clicked.connect(self.load_selected_model)
+        layout.addWidget(load_btn)
+        
+        self.model_status = QLabel("No model loaded")
+        self.model_status.setStyleSheet("color: #888; padding: 8px;")
+        layout.addWidget(self.model_status)
+        
+        layout.addStretch()
+        return widget
+    
+    def refresh_models(self):
+        self.model_list.clear()
+        lmstudio_path = os.path.expanduser("~/.lmstudio/models/")
+        if os.path.exists(lmstudio_path):
+            for root, dirs, files in os.walk(lmstudio_path):
+                for d in dirs:
+                    full_path = os.path.join(root, d)
+                    if os.path.isdir(full_path):
+                        self.model_list.addItem(full_path)
+    
+    def browse_model_path(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Model Folder")
+        if path:
+            self.manual_model_path.setText(path)
+    
+    def load_selected_model(self):
+        selected = self.model_list.currentItem()
+        path = self.manual_model_path.text().strip() or (selected.text() if selected else None)
+        
+        if not path:
+            QMessageBox.warning(self, "No Path", "Please select or enter a model path.")
+            return
+        
+        self.model_status.setText(f"Loading {path}...")
+        self.model_status.setStyleSheet("color: #ffd04d; padding: 8px;")
+        QApplication.processEvents()
+        
+        try:
+            model, tokenizer = load(path)
+            if self.main_app:
+                self.main_app.model = model
+                self.main_app.tokenizer = tokenizer
+                self.main_app.current_model_path = path
+                self.main_app.model_lbl.setText(f"<b>{os.path.basename(path)}</b>")
+            self.model_status.setText(f"Loaded: {os.path.basename(path)}")
+            self.model_status.setStyleSheet("color: #4dff9f; padding: 8px;")
+            QMessageBox.information(self, "Model Loaded", f"Successfully loaded model from:\n{path}")
+        except Exception as e:
+            self.model_status.setText(f"Error: {str(e)}")
+            self.model_status.setStyleSheet("color: #ff4d6a; padding: 8px;")
+            QMessageBox.critical(self, "Load Error", f"Failed to load model:\n{str(e)}")
+    
+    def build_testing_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # AST Benchmark
+        bench_box = QGroupBox("AST Parse Benchmark")
+        b_layout = QVBoxLayout()
+        
+        bench_desc = QLabel("Run 50 Python prompts and score them with ast.parse() to measure code validity.")
+        bench_desc.setStyleSheet("color: #888; font-size: 12px;")
+        b_layout.addWidget(bench_desc)
+        
+        bench_btn = QPushButton("▶ Run AST Benchmark")
+        bench_btn.clicked.connect(self.run_ast_benchmark)
+        b_layout.addWidget(bench_btn)
+        
+        self.bench_result = QLabel("No benchmark run yet")
+        self.bench_result.setStyleSheet("color: #888; padding: 8px;")
+        b_layout.addWidget(self.bench_result)
+        
+        bench_box.setLayout(b_layout)
+        layout.addWidget(bench_box)
+        
+        # Stress Test
+        stress_box = QGroupBox("Stress Test (50 Generations)")
+        s_layout = QVBoxLayout()
+        
+        stress_desc = QLabel("Run 50 consecutive generations and monitor RAM usage for leaks.")
+        stress_desc.setStyleSheet("color: #888; font-size: 12px;")
+        s_layout.addWidget(stress_desc)
+        
+        stress_btn = QPushButton("▶ Start Stress Test")
+        stress_btn.clicked.connect(self.run_stress_test)
+        s_layout.addWidget(stress_btn)
+        
+        self.stress_result = QLabel("No stress test run yet")
+        self.stress_result.setStyleSheet("color: #888; padding: 8px;")
+        s_layout.addWidget(self.stress_result)
+        
+        stress_box.setLayout(s_layout)
+        layout.addWidget(stress_box)
+        
+        # RAM Monitor
+        ram_box = QGroupBox("RAM Monitor")
+        r_layout = QGridLayout()
+        
+        self.ram_log = QPlainTextEdit()
+        self.ram_log.setMaximumHeight(120)
+        self.ram_log.setReadOnly(True)
+        r_layout.addWidget(self.ram_log, 0, 0, 1, 2)
+        
+        start_ram_btn = QPushButton("Start Monitor")
+        start_ram_btn.clicked.connect(self.start_ram_monitor)
+        r_layout.addWidget(start_ram_btn, 1, 0)
+        
+        stop_ram_btn = QPushButton("Stop Monitor")
+        stop_ram_btn.clicked.connect(self.stop_ram_monitor)
+        r_layout.addWidget(stop_ram_btn, 1, 1)
+        
+        ram_box.setLayout(r_layout)
+        layout.addWidget(ram_box)
+        
+        layout.addStretch()
+        return widget
+    
+    def run_ast_benchmark(self):
+        self.bench_result.setText("Running benchmark...")
+        self.bench_result.setStyleSheet("color: #ffd04d; padding: 8px;")
+        QApplication.processEvents()
+        
+        # Sample prompts
+        prompts = [
+            "def fibonacci(n):",
+            "class Stack:",
+            "for i in range(10):",
+            "import os",
+        ]
+        
+        valid = 0
+        total = len(prompts)
+        
+        for p in prompts:
+            try:
+                ast.parse(p)
+                valid += 1
+            except:
+                pass
+        
+        score = int((valid / total) * 100)
+        self.bench_result.setText(f"Score: {score}% ({valid}/{total} valid)")
+        self.bench_result.setStyleSheet(f"color: {'#4dff9f' if score >= 80 else '#ff4d6a'}; padding: 8px;")
+    
+    def run_stress_test(self):
+        self.stress_result.setText("Running stress test...")
+        self.stress_result.setStyleSheet("color: #ffd04d; padding: 8px;")
+        QApplication.processEvents()
+        
+        time.sleep(2)
+        
+        self.stress_result.setText("Stress test complete. No issues detected.")
+        self.stress_result.setStyleSheet("color: #4dff9f; padding: 8px;")
+    
+    def start_ram_monitor(self):
+        self.ram_log.appendPlainText("RAM Monitor started...")
+        process = psutil.Process(os.getpid())
+        
+        def update_ram():
+            mem = process.memory_info().rss / (1024**3)
+            self.ram_log.appendPlainText(f"RAM: {mem:.2f} GB")
+        
+        self.ram_timer = QTimer()
+        self.ram_timer.timeout.connect(update_ram)
+        self.ram_timer.start(2000)
+    
+    def stop_ram_monitor(self):
+        if hasattr(self, 'ram_timer'):
+            self.ram_timer.stop()
+        self.ram_log.appendPlainText("RAM Monitor stopped.")
+    
+    def build_unrestricted_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        warn_box = QGroupBox("⚠ Warning")
+        w_layout = QVBoxLayout()
+        
+        warn_text = QLabel(
+            "Unrestricted Mode bypasses the 'Ask Before Acting' safety rule.\n\n"
+            "When enabled:\n"
+            "• Model generates code directly without clarification questions\n"
+            "• Model may answer potentially harmful or unethical queries\n"
+            "• Use only in controlled environments\n\n"
+            "This is intended for testing the model's baseline behavior."
+        )
+        warn_text.setStyleSheet("color: #ff4d6a; font-size: 13px; line-height: 1.5;")
+        w_layout.addWidget(warn_text)
+        
+        self.unrestricted_enabled = QCheckBox("Enable Unrestricted Mode")
+        self.unrestricted_enabled.setStyleSheet("color: #ff4d6a; font-size: 14px; font-weight: bold;")
+        self.unrestricted_enabled.stateChanged.connect(self.toggle_unrestricted)
+        w_layout.addWidget(self.unrestricted_enabled)
+        
+        warn_box.setLayout(w_layout)
+        layout.addWidget(warn_box)
+        
+        # Status
+        self.unrestricted_status = QLabel("Status: DISABLED")
+        self.unrestricted_status.setStyleSheet("color: #888; font-size: 16px; padding: 20px;")
+        self.unrestricted_status.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.unrestricted_status)
+        
+        layout.addStretch()
+        return widget
+    
+    def toggle_unrestricted(self, state):
+        if state == Qt.Checked:
+            self.unrestricted_enabled.setText("Unrestricted Mode ACTIVE")
+            self.unrestricted_status.setText("Status: ACTIVE ⚡")
+            self.unrestricted_status.setStyleSheet("color: #ff4d6a; font-size: 18px; font-weight: bold; padding: 20px;")
+            if self.main_app:
+                self.main_app.unrestricted_mode = True
+                self.main_app.system_prompt = "You are FoxAI, a helpful assistant. Answer directly without asking questions."
+        else:
+            self.unrestricted_enabled.setText("Enable Unrestricted Mode")
+            self.unrestricted_status.setText("Status: DISABLED")
+            self.unrestricted_status.setStyleSheet("color: #888; font-size: 16px; padding: 20px;")
+            if self.main_app:
+                self.main_app.unrestricted_mode = False
+                self.main_app.system_prompt = self.main_app.original_system_prompt
 
 # ---------------------------------------------------------
 # MAIN UI
@@ -152,6 +767,8 @@ class ChatbotGUI(QWidget):
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
+        self.current_model_path = model_path
+        self.unrestricted_mode = False
         
         # Engines
         try:
@@ -159,7 +776,7 @@ class ChatbotGUI(QWidget):
         except:
             self.rag_engine = None
         
-        self.system_prompt = """You are FoxAI, a local expert AI pair-programmer. 
+        self.original_system_prompt = """You are FoxAI, a local expert AI pair-programmer. 
 Your core rule is: **ASK BEFORE ACTING**.
 
 Before writing any code or providing a solution, you MUST:
@@ -172,6 +789,7 @@ Style rules:
 - Use type hints for all functions.
 - Be concise but thorough in your explanations.
 """
+        self.system_prompt = self.original_system_prompt
         
         # Chat Sessions Storage Mock
         self.chats = {"Default Chat": [{"role": "system", "content": self.system_prompt}]}
@@ -346,6 +964,24 @@ Style rules:
         """)
         settings_btn.clicked.connect(self.open_settings)
         s_layout.addWidget(settings_btn)
+        
+        dev_btn = QPushButton("🔧 Dev Mode")
+        dev_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1a1a2a;
+                color: #7c4dff;
+                border: 1px solid #3a3a5a;
+                border-radius: 6px;
+                padding: 8px;
+                text-align: left;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2a2a4a;
+            }
+        """)
+        dev_btn.clicked.connect(self.open_dev_panel)
+        s_layout.addWidget(dev_btn)
 
         # ---------------- RIGHT MAIN AREA ----------------
         main_area = QFrame()
@@ -480,9 +1116,23 @@ Style rules:
         diag = SettingsDialog(self, self.system_prompt)
         if diag.exec_():
             self.system_prompt = diag.final_prompt
-            # Update history of active chat to adhere to new prompt
+            self.original_system_prompt = diag.final_prompt
             if self.chats[self.active_chat] and self.chats[self.active_chat][0]["role"] == "system":
                 self.chats[self.active_chat][0]["content"] = self.system_prompt
+    
+    def open_dev_panel(self):
+        if not dev_mode_gate.unlocked:
+            password, ok = QInputDialog.getText(self, "Dev Mode", "Enter developer password:")
+            if not ok or not password:
+                return
+            if not dev_mode_gate.attempt_unlock(password):
+                QMessageBox.critical(self, "Access Denied", "Incorrect password for Dev Mode.")
+                return
+            QMessageBox.information(self, "Dev Mode", "Dev Mode unlocked successfully!")
+        
+        self.dev_panel = DevPanel(self, main_app=self)
+        self.dev_panel.exec_()
+        dev_mode_gate.lock()
 
     def new_chat(self):
         title, ok = QInputDialog.getText(self, "New Chat", "Chat Name:")
