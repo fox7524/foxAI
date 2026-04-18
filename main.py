@@ -1655,6 +1655,36 @@ class ChatbotGUI(QWidget):
                 border: 1px solid {colors['border']};
                 color: {colors['muted']};
             }}
+            QDialog, QMessageBox {{
+                background-color: {colors['panel']};
+                border: 1px solid {colors['border']};
+                border-radius: 12px;
+            }}
+            QPlainTextEdit, QTextBrowser {{
+                background-color: {colors['bg']};
+                border: 1px solid {colors['border']};
+                border-radius: 12px;
+                padding: 12px;
+            }}
+            QMenu {{
+                background-color: {colors['panel']};
+                border: 1px solid {colors['border']};
+                border-radius: 10px;
+                padding: 6px;
+            }}
+            QMenu::item {{
+                padding: 8px 12px;
+                border-radius: 8px;
+            }}
+            QMenu::item:selected {{
+                background-color: {colors['chip']};
+            }}
+            QToolButton {{
+                background-color: {colors['chip']};
+                border: 1px solid {colors['border']};
+                border-radius: 10px;
+                color: {colors['text']};
+            }}
             QScrollBar:vertical {{
                 border: none;
                 background: transparent;
@@ -2028,12 +2058,16 @@ class ChatbotGUI(QWidget):
             self.input_field.setFocus()
             return
         self.input_field.clear()
-        
-        # Display user message
-        self.add_chat_bubble("You", user_text, is_user=True)
-        
+
+        self.chat_ui.setdefault(self.active_chat, [])
+        is_first_user_msg = not any(m.get("role") == "user" for m in self.chat_ui[self.active_chat])
+        if is_first_user_msg and self._is_placeholder_chat_name(self.active_chat):
+            self._auto_name_active_chat(user_text)
+
         # History appends
         self.chats[self.active_chat].append({"role": "user", "content": user_text})
+        self.chat_ui[self.active_chat].append({"role": "user", "content": user_text})
+        self.render_chat(self.active_chat)
         
         # Context formulation
         context_prompt = user_text
@@ -2070,6 +2104,12 @@ class ChatbotGUI(QWidget):
         self._answer_started = False
         self._stream_in_think = False
         self._stream_buffer = ""
+
+        self.chat_ui[self.active_chat].append(
+            {"role": "assistant", "answer": "", "think": "", "thought_s": None, "think_collapsed": False, "meta": None}
+        )
+        self._pending_chat = self.active_chat
+        self._pending_msg_index = len(self.chat_ui[self.active_chat]) - 1
         
         self.worker = AIWorker(self.model, self.tokenizer, prompt_string)
         self.worker.new_token.connect(self.on_new_token)
@@ -2218,26 +2258,27 @@ class ChatbotGUI(QWidget):
             msg["think"] += think_delta
             msg["answer"] += answer_delta
 
-        if not answer_delta:
-            return
-
-        if not self._answer_started:
+        if (answer_delta or think_delta) and not self._answer_started and answer_delta:
             thought_s = max(0.0, time.time() - getattr(self, "_thinking_start_ts", time.time()))
             if self._pending_chat is not None and self._pending_msg_index is not None:
                 self.chat_ui[self._pending_chat][self._pending_msg_index]["thought_s"] = float(thought_s)
 
-            self.chat_display.append(f"<div style='color: #777; font-size: 12px; margin: 8px 0px 14px 0px;'>▾ Thought for {thought_s:.2f} seconds</div>")
             self._answer_started = True
             self.gen_status_lbl.setText("")
+            self._schedule_render()
+            return
 
-            fmt = QTextCharFormat()
-            fmt.setForeground(self.palette().color(QPalette.Text))
-            self.chat_display.setCurrentCharFormat(fmt)
+        if answer_delta or think_delta:
+            self._schedule_render()
 
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertText(answer_delta)
-        self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
+    def _schedule_render(self):
+        if not hasattr(self, "_render_timer") or self._render_timer is None:
+            self._render_timer = QTimer(self)
+            self._render_timer.setSingleShot(True)
+            self._render_timer.timeout.connect(lambda: self.render_chat(self.active_chat))
+
+        if not self._render_timer.isActive():
+            self._render_timer.start(40)
 
     def on_ai_success(self, response, tps, tokens, ms, peak_memory_gb):
         self.chats[self.active_chat].append({"role": "assistant", "content": response})
@@ -2269,7 +2310,16 @@ class ChatbotGUI(QWidget):
         self.rag_badge.style().polish(self.rag_badge)
 
     def on_ai_error(self, err_msg):
-        self.chat_display.append(f"<div style='color: #ff5555; '><b>Error:</b> {err_msg}</div><br>")
+        if self._pending_chat is not None and self._pending_msg_index is not None:
+            try:
+                self.chat_ui[self._pending_chat].pop(self._pending_msg_index)
+            except Exception:
+                pass
+            self._pending_chat = None
+            self._pending_msg_index = None
+
+        self.render_chat(self.active_chat)
+        self.chat_display.append(f"<div style='color: #ff5555; '><b>Error:</b> {self._html_escape(err_msg)}</div><br>")
         self.input_field.setDisabled(False)
         self.send_btn.setDisabled(False)
         self.gen_status_lbl.setText("")
