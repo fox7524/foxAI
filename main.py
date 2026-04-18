@@ -73,10 +73,11 @@ from PyQt5.QtWidgets import (
     QInputDialog, QTabWidget, QCheckBox, QSpinBox, QSlider,
     QComboBox, QTextBrowser, QProgressBar, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView, QGroupBox,
-    QGridLayout, QPlainTextEdit, QDoubleSpinBox, QToolButton, QMenu, QAction
+    QGridLayout, QPlainTextEdit, QDoubleSpinBox, QToolButton, QMenu, QAction,
+    QListWidgetItem
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
-from PyQt5.QtGui import QFont, QTextCursor, QPalette, QColor, QTextCharFormat
+from PyQt5.QtGui import QFont, QTextCursor, QPalette, QColor, QTextCharFormat, QCursor
 
 # mlx_lm: Apple's MLX framework for local LLM inference
 # - load(): Load a model and tokenizer from a path
@@ -1279,8 +1280,7 @@ class ChatbotGUI(QWidget):
         
         # Session List
         self.chat_list = QListWidget()
-        self.chat_list.addItem(self.active_chat)
-        self.chat_list.itemClicked.connect(self.switch_chat)
+        self.chat_list.setObjectName("ChatList")
         s_layout.addWidget(self.chat_list)
         
         s_layout.addStretch()
@@ -1368,6 +1368,9 @@ class ChatbotGUI(QWidget):
         self.chat_display.setReadOnly(True)
         m_layout.addWidget(self.chat_display)
 
+        self.chat_list.itemSelectionChanged.connect(self._on_chat_list_selection_changed)
+        self._rebuild_chat_list()
+
         self.chat_menu_btn = QToolButton(self.chat_display.viewport())
         self.chat_menu_btn.setText("⋯")
         self.chat_menu_btn.setFixedSize(28, 28)
@@ -1412,11 +1415,19 @@ class ChatbotGUI(QWidget):
         send_btn.setCursor(Qt.PointingHandCursor)
         send_btn.clicked.connect(self.soru_sor)
         self.send_btn = send_btn
+
+        stop_btn = QPushButton("■")
+        stop_btn.setFixedSize(32, 32)
+        stop_btn.setCursor(Qt.PointingHandCursor)
+        stop_btn.setEnabled(False)
+        stop_btn.clicked.connect(self.stop_generation)
+        self.stop_btn = stop_btn
         
         btm_input_bar.addLayout(tool_layout)
         self.gen_status_lbl = QLabel("")
         btm_input_bar.addWidget(self.gen_status_lbl)
         btm_input_bar.addStretch()
+        btm_input_bar.addWidget(stop_btn)
         btm_input_bar.addWidget(send_btn)
         ib_layout.addLayout(btm_input_bar)
 
@@ -1443,6 +1454,117 @@ class ChatbotGUI(QWidget):
         main_layout.addWidget(splitter)
 
         self.apply_theme(self.prompts.get("theme", "dark"))
+
+    def _rebuild_chat_list(self):
+        self.chat_list.clear()
+        for name in self.chats.keys():
+            self._add_chat_list_item(name)
+
+        items = self.chat_list.findItems(self.active_chat, Qt.MatchExactly)
+        if items:
+            self.chat_list.setCurrentItem(items[0])
+
+    def _add_chat_list_item(self, chat_name: str):
+        item = QListWidgetItem(chat_name)
+        item.setSizeHint(QSize(220, 44))
+        self.chat_list.addItem(item)
+
+        w = QWidget()
+        layout = QHBoxLayout(w)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(8)
+
+        lbl = QLabel(chat_name)
+        lbl.setObjectName("ChatItemLabel")
+        layout.addWidget(lbl)
+        layout.addStretch()
+
+        btn = QToolButton()
+        btn.setText("⋯")
+        btn.setObjectName("ChatItemMenu")
+        btn.setAutoRaise(True)
+        btn.clicked.connect(lambda _=False, name=chat_name: self.open_chat_list_menu(name, btn))
+        layout.addWidget(btn)
+
+        w.mousePressEvent = lambda _e, it=item: self.chat_list.setCurrentItem(it)
+        self.chat_list.setItemWidget(item, w)
+
+    def _on_chat_list_selection_changed(self):
+        it = self.chat_list.currentItem()
+        if not it:
+            return
+        self.switch_chat(it)
+
+    def open_chat_list_menu(self, chat_name: str, anchor_btn: QToolButton):
+        menu = QMenu(self)
+        change_name = QAction("Change name", self)
+        delete_chat = QAction("Delete chat", self)
+        history = QAction("Get chat history", self)
+
+        change_name.triggered.connect(lambda: self._rename_chat_via_prompt(chat_name))
+        delete_chat.triggered.connect(lambda: self._delete_chat_by_name(chat_name))
+        history.triggered.connect(lambda: self._menu_show_history_for(chat_name))
+
+        menu.addAction(change_name)
+        menu.addAction(delete_chat)
+        menu.addAction(history)
+
+        pos = anchor_btn.mapToGlobal(anchor_btn.rect().bottomRight())
+        menu.exec_(pos)
+
+    def _rename_chat_via_prompt(self, chat_name: str):
+        new_name, ok = QInputDialog.getText(self, "Change Chat Name", "New name:", text=chat_name)
+        if not ok or not new_name.strip():
+            return
+        self._rename_chat(chat_name, new_name.strip())
+        self._rebuild_chat_list()
+
+    def _delete_chat_by_name(self, chat_name: str):
+        if chat_name == "Default Chat":
+            QMessageBox.warning(self, "Delete Chat", "Default Chat cannot be deleted.")
+            return
+        res = QMessageBox.question(self, "Delete Chat", f"Delete '{chat_name}'? This cannot be undone.", QMessageBox.Yes | QMessageBox.No)
+        if res != QMessageBox.Yes:
+            return
+        self.chats.pop(chat_name, None)
+        self.chat_ui.pop(chat_name, None)
+        if self.active_chat == chat_name:
+            self.active_chat = "Default Chat"
+        self._rebuild_chat_list()
+        self.render_chat(self.active_chat)
+
+    def _menu_show_history_for(self, chat_name: str):
+        data = {
+            "name": chat_name,
+            "messages": self.chats.get(chat_name, []),
+        }
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Chat History")
+        dlg.setFixedSize(720, 520)
+        layout = QVBoxLayout(dlg)
+        editor = QPlainTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlainText(json.dumps(data, indent=2, ensure_ascii=False))
+        layout.addWidget(editor)
+        btn_row = QHBoxLayout()
+        copy_btn = QPushButton("Copy")
+        close_btn = QPushButton("Close")
+        btn_row.addStretch()
+        btn_row.addWidget(copy_btn)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(editor.toPlainText()))
+        close_btn.clicked.connect(dlg.accept)
+        dlg.exec_()
+
+    def stop_generation(self):
+        if hasattr(self, "worker") and self.worker is not None:
+            try:
+                self.worker.stop()
+            except Exception:
+                pass
+        self.stop_btn.setEnabled(False)
+        self.gen_status_lbl.setText("Stopping…")
 
     def detect_system_theme(self) -> str:
         pal = QApplication.instance().palette()
@@ -1685,6 +1807,12 @@ class ChatbotGUI(QWidget):
                 border-radius: 10px;
                 color: {colors['text']};
             }}
+            QToolButton#ChatItemMenu {{
+                padding: 0px;
+                min-width: 24px;
+                min-height: 24px;
+                border-radius: 10px;
+            }}
             QScrollBar:vertical {{
                 border: none;
                 background: transparent;
@@ -1844,9 +1972,12 @@ class ChatbotGUI(QWidget):
 
         self.chats[title] = [{"role": "system", "content": self.system_prompt}]
         self.chat_ui[title] = []
-        self.chat_list.addItem(title)
-        self.chat_list.setCurrentRow(self.chat_list.count() - 1)
-        self.switch_chat(self.chat_list.currentItem())
+        self.active_chat = title
+        self._rebuild_chat_list()
+        items = self.chat_list.findItems(title, Qt.MatchExactly)
+        if items:
+            self.chat_list.setCurrentItem(items[0])
+        self.render_chat(self.active_chat)
 
     def switch_chat(self, item):
         self.active_chat = item.text()
@@ -1981,7 +2112,14 @@ class ChatbotGUI(QWidget):
     def on_chat_anchor_clicked(self, url):
         s = url.toString()
         if not s.startswith("toggle_think:"):
+            if s.startswith("msg_menu:"):
+                try:
+                    idx = int(s.split(":", 1)[1])
+                except Exception:
+                    return
+                self.open_message_menu(idx)
             return
+
         try:
             idx = int(s.split(":", 1)[1])
         except Exception:
@@ -1991,6 +2129,68 @@ class ChatbotGUI(QWidget):
             msgs[idx]["think_collapsed"] = not msgs[idx].get("think_collapsed", True)
             self.render_chat(self.active_chat)
 
+    def open_message_menu(self, msg_index: int):
+        msgs = self.chat_ui.get(self.active_chat, [])
+        if not (0 <= msg_index < len(msgs)):
+            return
+        msg = msgs[msg_index]
+        if msg.get("role") != "user":
+            return
+
+        menu = QMenu(self)
+        edit_act = QAction("Edit message", self)
+        delete_act = QAction("Delete message", self)
+        copy_act = QAction("Copy", self)
+
+        edit_act.triggered.connect(lambda: self._edit_user_message(msg_index))
+        delete_act.triggered.connect(lambda: self._delete_user_message(msg_index))
+        copy_act.triggered.connect(lambda: QApplication.clipboard().setText(msg.get("content", "")))
+
+        menu.addAction(edit_act)
+        menu.addAction(delete_act)
+        menu.addAction(copy_act)
+
+        pos = QCursor.pos()
+        menu.exec_(pos)
+
+    def _edit_user_message(self, msg_index: int):
+        msgs = self.chat_ui.get(self.active_chat, [])
+        if not (0 <= msg_index < len(msgs)):
+            return
+        msg = msgs[msg_index]
+        current = msg.get("content", "")
+        new_text, ok = QInputDialog.getMultiLineText(self, "Edit Message", "Edit:", current)
+        if not ok:
+            return
+        new_text = (new_text or "").strip()
+        if not new_text:
+            return
+        msg["content"] = new_text
+        self._sync_chat_history_from_ui(self.active_chat)
+        self.render_chat(self.active_chat)
+
+    def _delete_user_message(self, msg_index: int):
+        msgs = self.chat_ui.get(self.active_chat, [])
+        if not (0 <= msg_index < len(msgs)):
+            return
+        res = QMessageBox.question(self, "Delete Message", "Delete this message? This cannot be undone.", QMessageBox.Yes | QMessageBox.No)
+        if res != QMessageBox.Yes:
+            return
+        msgs.pop(msg_index)
+        self._sync_chat_history_from_ui(self.active_chat)
+        self.render_chat(self.active_chat)
+
+    def _sync_chat_history_from_ui(self, chat_name: str):
+        system = [{"role": "system", "content": self.system_prompt}]
+        ui_msgs = self.chat_ui.get(chat_name, [])
+        out = list(system)
+        for m in ui_msgs:
+            if m.get("role") == "user":
+                out.append({"role": "user", "content": m.get("content", "")})
+            elif m.get("role") == "assistant":
+                out.append({"role": "assistant", "content": m.get("answer", "")})
+        self.chats[chat_name] = out
+
     def render_chat(self, chat_name: str):
         msgs = self.chat_ui.get(chat_name, [])
         parts = []
@@ -1999,9 +2199,14 @@ class ChatbotGUI(QWidget):
             if role == "user":
                 txt = self._html_escape(m.get("content", "")).replace("\n", "<br>")
                 parts.append(
-                    "<div style='margin: 10px 0 18px 0;'>"
-                    "<div style='color:#888;font-weight:700;font-size:12px;margin-bottom:6px;'>YOU</div>"
-                    f"<div style='font-size:16px;line-height:1.6'>{txt}</div>"
+                    "<div style='margin: 10px 0 18px 0; display:flex; justify-content:flex-end;'>"
+                    "<div style='max-width: 820px; text-align:left;'>"
+                    "<div style='display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px;'>"
+                    "<div style='color:#888;font-weight:700;font-size:12px;'>YOU</div>"
+                    f"<a href='msg_menu:{i}' style='color:#777;text-decoration:none;font-size:18px; line-height:18px;'>⋯</a>"
+                    "</div>"
+                    f"<div style='font-size:16px;line-height:1.6;background:#1a1a1a;border:1px solid #222;border-radius:12px;padding:12px 14px;'>{txt}</div>"
+                    "</div>"
                     "</div>"
                 )
             elif role == "assistant":
@@ -2017,15 +2222,15 @@ class ChatbotGUI(QWidget):
                     t = f"{float(thought_s):.2f}" if isinstance(thought_s, (int, float)) else "0.00"
                     block.append(
                         "<div style='margin: 6px 0 10px 0;'>"
-                        f"<a style='color:#777;text-decoration:none;font-size:12px;' href='toggle_think:{i}'>{arrow}</a>"
-                        f"<span style='color:#777;font-size:12px;margin-left:8px;'>Thought for {t} seconds</span>"
+                        f"<a style='color:#777;text-decoration:none;font-size:13px;' href='toggle_think:{i}'>{arrow}</a>"
+                        f"<span style='color:#777;font-size:13px;margin-left:8px;'>Thought for {t} seconds</span>"
                         "</div>"
                     )
                     if not collapsed:
                         think_html = self._html_escape(think).replace("\n", "<br>")
                         block.append(
                             "<div style='background:#222;border:1px solid #2a2a2a;border-radius:12px;padding:14px 16px;margin-bottom:14px;'>"
-                            f"<div style='color:#bbb;font-size:13px;line-height:1.6'>{think_html}</div>"
+                            f"<div style='color:#b0b0b0;font-size:13px;line-height:1.7'>{think_html}</div>"
                             "</div>"
                         )
                 else:
@@ -2097,6 +2302,7 @@ class ChatbotGUI(QWidget):
 
         self.input_field.setDisabled(True)
         self.send_btn.setDisabled(True)
+        self.stop_btn.setEnabled(True)
         self.gen_status_lbl.setText("Thinking…")
         
         # Prepare for assistant response
@@ -2106,7 +2312,7 @@ class ChatbotGUI(QWidget):
         self._stream_buffer = ""
 
         self.chat_ui[self.active_chat].append(
-            {"role": "assistant", "answer": "", "think": "", "thought_s": None, "think_collapsed": False, "meta": None}
+            {"role": "assistant", "answer": "", "think": "", "thought_s": None, "think_collapsed": True, "meta": None}
         )
         self._pending_chat = self.active_chat
         self._pending_msg_index = len(self.chat_ui[self.active_chat]) - 1
@@ -2281,7 +2487,11 @@ class ChatbotGUI(QWidget):
             self._render_timer.start(40)
 
     def on_ai_success(self, response, tps, tokens, ms, peak_memory_gb):
-        self.chats[self.active_chat].append({"role": "assistant", "content": response})
+        if self._pending_chat is not None and self._pending_msg_index is not None:
+            assistant_answer = self.chat_ui[self._pending_chat][self._pending_msg_index].get("answer", "")
+            self.chats[self._pending_chat].append({"role": "assistant", "content": assistant_answer})
+        else:
+            self.chats[self.active_chat].append({"role": "assistant", "content": ""})
         if isinstance(peak_memory_gb, (int, float)) and peak_memory_gb > 0:
             self._model_peak_memory_gb = float(peak_memory_gb)
 
@@ -2302,6 +2512,7 @@ class ChatbotGUI(QWidget):
         
         self.input_field.setDisabled(False)
         self.send_btn.setDisabled(False)
+        self.stop_btn.setEnabled(False)
         self.gen_status_lbl.setText("")
         self.input_field.setFocus()
         self.rag_badge.setText("RAG: OFF")
@@ -2322,6 +2533,7 @@ class ChatbotGUI(QWidget):
         self.chat_display.append(f"<div style='color: #ff5555; '><b>Error:</b> {self._html_escape(err_msg)}</div><br>")
         self.input_field.setDisabled(False)
         self.send_btn.setDisabled(False)
+        self.stop_btn.setEnabled(False)
         self.gen_status_lbl.setText("")
         self.input_field.setFocus()
 
