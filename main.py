@@ -100,6 +100,45 @@ DEV_MODE_PASSWORD = "123"
 # WORKER THREADS (Background Processing)
 # ---------------------------------------------------------
 
+class ModelLoaderWorker(QThread):
+    loaded = pyqtSignal(object, object, str)
+    error = pyqtSignal(str)
+
+    def __init__(self, model_path: str):
+        super().__init__()
+        self.model_path = model_path
+
+    def run(self):
+        try:
+            model, tokenizer = load(self.model_path, tokenizer_config={"fix_mistral_regex": True})
+            self._ensure_special_tokens(tokenizer)
+            self.loaded.emit(model, tokenizer, self.model_path)
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def _ensure_special_tokens(self, tokenizer):
+        eos_id = getattr(tokenizer, "eos_token_id", None)
+        if eos_id is None:
+            eos_token = getattr(tokenizer, "eos_token", None) or "</s>"
+            if hasattr(tokenizer, "convert_tokens_to_ids"):
+                try:
+                    eos_id = tokenizer.convert_tokens_to_ids(eos_token)
+                except Exception:
+                    eos_id = None
+            if eos_id is not None:
+                try:
+                    tokenizer.eos_token_id = eos_id
+                except Exception:
+                    pass
+
+        pad_id = getattr(tokenizer, "pad_token_id", None)
+        if pad_id is None:
+            if hasattr(tokenizer, "eos_token_id") and getattr(tokenizer, "eos_token_id", None) is not None:
+                try:
+                    tokenizer.pad_token_id = tokenizer.eos_token_id
+                except Exception:
+                    pass
+
 class AIWorker(QThread):
     """
     Background thread for AI text generation.
@@ -149,6 +188,11 @@ class AIWorker(QThread):
         DO NOT call this directly - use start() instead.
         """
         try:
+            if self.model is None or self.tokenizer is None:
+                raise ValueError("Model or tokenizer is not loaded.")
+            if getattr(self.tokenizer, "eos_token_id", None) is None:
+                raise ValueError("Tokenizer eos_token_id is missing. Reload the model or choose another model.")
+
             start_time = time.time()
             full_response = ""
             token_count = 0
@@ -191,6 +235,38 @@ class AIWorker(QThread):
         self.is_running = False
 
 
+class BenchmarkWorker(QThread):
+    finished = pyqtSignal(float, int, float, str)
+    error = pyqtSignal(str)
+
+    def __init__(self, model, tokenizer, prompt: str, max_tokens: int = 128):
+        super().__init__()
+        self.model = model
+        self.tokenizer = tokenizer
+        self.prompt = prompt
+        self.max_tokens = max_tokens
+
+    def run(self):
+        try:
+            if self.model is None or self.tokenizer is None:
+                raise ValueError("Model/tokenizer not loaded")
+            start = time.time()
+            out = generate(self.model, self.tokenizer, prompt=self.prompt, max_tokens=self.max_tokens)
+            elapsed = time.time() - start
+            token_count = 0
+            if hasattr(self.tokenizer, "encode"):
+                try:
+                    token_count = len(self.tokenizer.encode(out))
+                except Exception:
+                    token_count = len(out.split())
+            else:
+                token_count = len(out.split())
+            tps = token_count / elapsed if elapsed > 0 else 0.0
+            self.finished.emit(tps, token_count, elapsed, out[:2000])
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class MemoryMonitor(QThread):
     """
     Background thread for monitoring system resources.
@@ -202,7 +278,7 @@ class MemoryMonitor(QThread):
     SIGNALS:
     - update_signal(str, str): Emits (ram_usage_gb, cpu_percent)
     """
-    update_signal = pyqtSignal(str, str)  # (ram_gb, sys_load)
+    update_signal = pyqtSignal(str, str, str, str)  # (app_ram_gb, sys_ram_percent, cpu_percent, gpu_percent)
 
     def run(self):
         """
@@ -218,16 +294,44 @@ class MemoryMonitor(QThread):
                 mem_info = process.memory_info()
                 used_gb = mem_info.rss / (1024 ** 3)  # Convert bytes to GB
 
-                # Get system-wide CPU usage percentage
-                # interval=None uses cached value (faster, less accurate)
-                # For real-time accuracy, use interval=1 (blocks for 1 second)
+                sys_mem = psutil.virtual_memory()
+                sys_ram_percent = sys_mem.percent
+
                 cpu_percent = psutil.cpu_percent(interval=None)
 
-                # Emit update signal with formatted strings
-                self.update_signal.emit(f"{used_gb:.2f} GB", f"{cpu_percent}%")
+                gpu_percent = self._get_gpu_util_percent()
+
+                self.update_signal.emit(
+                    f"{used_gb:.2f} GB",
+                    f"{sys_ram_percent:.1f}%",
+                    f"{cpu_percent:.1f}%",
+                    gpu_percent,
+                )
             except:
                 pass  # Ignore errors, try again next iteration
             time.sleep(2)
+
+    def _get_gpu_util_percent(self) -> str:
+        if sys.platform == "darwin":
+            return "N/A"
+
+        try:
+            import shutil
+            if shutil.which("nvidia-smi") is None:
+                return "N/A"
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            if result.returncode == 0:
+                val = result.stdout.strip().splitlines()[0].strip()
+                if val:
+                    return f"{float(val):.1f}%"
+        except Exception:
+            pass
+        return "N/A"
 
 # ---------------------------------------------------------
 # SETTINGS & ROADMAP VIEWER
@@ -273,12 +377,18 @@ class SettingsDialog(QDialog):
         theme_layout = QHBoxLayout()
         self.rb_dark = QRadioButton("🌙 Dark Studio")
         self.rb_light = QRadioButton("☀️ Light")
+        self.rb_system = QRadioButton("🖥 System")
 
-        if current_theme == "dark": self.rb_dark.setChecked(True)
-        else: self.rb_light.setChecked(True)
+        if current_theme == "system":
+            self.rb_system.setChecked(True)
+        elif current_theme == "light":
+            self.rb_light.setChecked(True)
+        else:
+            self.rb_dark.setChecked(True)
 
         theme_layout.addWidget(self.rb_dark)
         theme_layout.addWidget(self.rb_light)
+        theme_layout.addWidget(self.rb_system)
         theme_layout.addStretch()
         layout.addLayout(theme_layout)
 
@@ -294,6 +404,11 @@ class SettingsDialog(QDialog):
         dev_note = QLabel("🔒 System prompt is only editable in Dev Mode (Settings → Dev Mode)")
         dev_note.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
         layout.addWidget(dev_note)
+
+        # Live theme preview (applies immediately)
+        self.rb_dark.toggled.connect(lambda _v: self._preview_theme())
+        self.rb_light.toggled.connect(lambda _v: self._preview_theme())
+        self.rb_system.toggled.connect(lambda _v: self._preview_theme())
 
         layout.addStretch()
 
@@ -312,15 +427,32 @@ class SettingsDialog(QDialog):
     def accept_settings(self):
         # Save user_prompt to prompts.json via main app
         self.final_user_prompt = self.prompt_edit.toPlainText()
-        self.final_theme = "dark" if self.rb_dark.isChecked() else "light"
+        if self.rb_system.isChecked():
+            self.final_theme = "system"
+        elif self.rb_light.isChecked():
+            self.final_theme = "light"
+        else:
+            self.final_theme = "dark"
 
         # Update main app's user_prompt
         if self.main_app and hasattr(self.main_app, 'prompts'):
             self.main_app.prompts["user_prompt"] = self.final_user_prompt
+            self.main_app.prompts["theme"] = self.final_theme
             self.main_app.save_prompts(self.main_app.prompts)
             self.main_app.user_prompt = self.final_user_prompt
+            self.main_app.apply_theme(self.final_theme)
 
         self.accept()
+
+    def _preview_theme(self):
+        if not self.main_app:
+            return
+        if self.rb_system.isChecked():
+            self.main_app.apply_theme("system")
+        elif self.rb_light.isChecked():
+            self.main_app.apply_theme("light")
+        elif self.rb_dark.isChecked():
+            self.main_app.apply_theme("dark")
 
     def show_roadmap(self):
         QMessageBox.information(self, "Roadmap", "📅 Phase 1 (Apr 13-20): Foundation - Model loads, RAG indexer, LoRA fine-tune\n"
@@ -349,32 +481,10 @@ dev_mode_gate = DevModeGate()
 # ---------------------------------------------------------
 # DEV PANEL
 # ---------------------------------------------------------
-class DevPanel(QDialog):
+class DevPanel(QWidget):
     def __init__(self, parent=None, main_app=None):
         super().__init__(parent)
         self.main_app = main_app
-        self.setWindowTitle("Developer Panel")
-        self.setGeometry(150, 150, 900, 700)
-        self.setStyleSheet("""
-            QDialog { background-color: #0f0f0f; color: #e0e0e0; }
-            QTabWidget::pane { border: 1px solid #333; background: #161616; }
-            QTabBar::tab { background: #1e1e1e; color: #888; padding: 8px 16px; }
-            QTabBar::tab:selected { background: #222; color: white; }
-            QPushButton { background-color: #2a2a2a; border: 1px solid #444; border-radius: 6px; padding: 8px 16px; color: white; }
-            QPushButton:hover { background-color: #333; }
-            QPushButton:disabled { background-color: #1a1a1a; color: #555; }
-            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #222; border: 1px solid #333; border-radius: 6px; padding: 6px; color: white; }
-            QCheckBox { color: #ccc; spacing: 8px; }
-            QCheckBox::indicator { width: 16px; height: 16px; border-radius: 3px; border: 1px solid #555; background: #222; }
-            QLabel { color: #ccc; }
-            QProgressBar { border: 1px solid #333; border-radius: 4px; background: #1a1a1a; text-align: center; color: white; }
-            QProgressBar::chunk { background: #7c4dff; border-radius: 3px; }
-            QGroupBox { border: 1px solid #333; border-radius: 8px; margin-top: 12px; padding-top: 12px; font-weight: bold; color: #7c4dff; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
-            QTableWidget { background-color: #1a1a1a; border: 1px solid #333; color: white; gridline-color: #2a2a2a; }
-            QHeaderView::section { background-color: #1e1e1e; color: #ccc; padding: 6px; border: none; }
-            QPlainTextEdit { background-color: #1a1a1a; border: 1px solid #333; color: #ddd; }
-        """)
         
         self.init_ui()
         
@@ -382,20 +492,20 @@ class DevPanel(QDialog):
         layout = QVBoxLayout(self)
         
         # Header
-        header = QLabel("🔧 FoxAI Developer Panel")
-        header.setStyleSheet("font-size: 20px; font-weight: bold; color: #7c4dff; padding: 10px;")
+        header = QLabel("Developer")
+        header.setObjectName("DevHeader")
         layout.addWidget(header)
         
         tabs = QTabWidget()
         
         # TAB 1: RAG CONTROLS
-        tabs.addTab(self.build_rag_tab(), "📚 RAG Indexer")
+        tabs.addTab(self.build_rag_tab(), "RAG Indexer")
         # TAB 2: FINE-TUNING
         tabs.addTab(self.build_finetune_tab(), "⚡ Fine-tune")
         # TAB 3: MODEL SELECTOR
-        tabs.addTab(self.build_model_tab(), "🤖 Model")
+        tabs.addTab(self.build_model_tab(), "Model")
         # TAB 4: TESTING
-        tabs.addTab(self.build_testing_tab(), "🧪 Testing")
+        tabs.addTab(self.build_testing_tab(), "Testing")
         # TAB 5: UNRESTRICTED MODE
         tabs.addTab(self.build_unrestricted_tab(), "⚠ Unrestricted")
         
@@ -404,10 +514,14 @@ class DevPanel(QDialog):
         # Bottom buttons
         bottom = QHBoxLayout()
         bottom.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.close)
+        close_btn = QPushButton("Hide")
+        close_btn.clicked.connect(self._hide_dev_sidebar)
         bottom.addWidget(close_btn)
         layout.addLayout(bottom)
+
+    def _hide_dev_sidebar(self):
+        if self.main_app:
+            self.main_app.toggle_dev_sidebar(force_state=False)
     
     def build_rag_tab(self):
         widget = QWidget()
@@ -488,38 +602,34 @@ class DevPanel(QDialog):
         
         self.rag_status_lbl.setText("Indexing...")
         QApplication.processEvents()
-        
-        # Collect Python files
-        py_files = glob.glob(os.path.join(folder, "**/*.py"), recursive=True)
-        
+
         if self.main_app and self.main_app.rag_engine:
-            count = 0
-            for f in py_files:
-                try:
-                    with open(f, 'r', encoding='utf-8') as file:
-                        content = file.read()
-                    chunks = self.main_app.rag_engine.chunk_text(content)
-                    for chunk in chunks:
-                        self.main_app.rag_engine.documents.append(chunk)
-                    count += 1
-                except:
-                    pass
-            
-            if self.main_app.rag_engine.documents:
-                import numpy as np
-                embeddings = self.main_app.rag_engine.model.encode(self.main_app.rag_engine.documents)
-                embeddings = np.array(embeddings).astype('float32')
-                dim = embeddings.shape[1]
-                if self.main_app.rag_engine.index is None:
-                    import faiss
-                    self.main_app.rag_engine.index = faiss.IndexFlatL2(dim)
-                self.main_app.rag_engine.index.add(embeddings)
-                self.main_app.rag_engine.save_index()
-            
-            self.rag_chunks_lbl.setText(f"{len(self.main_app.rag_engine.documents)} chunks")
-            self.rag_index_lbl.setText(f"Index: {len(self.main_app.rag_engine.documents)} vectors")
-            self.rag_status_lbl.setText("Active")
-            QMessageBox.information(self, "Indexing Complete", f"Indexed {count} files, {len(self.main_app.rag_engine.documents)} total chunks.")
+            ok = False
+            try:
+                ok = self.main_app.rag_engine.ingest_folder(folder, recursive=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Indexing Error", str(e))
+                self.rag_status_lbl.setText("Error")
+                return
+
+            stats = {}
+            try:
+                stats = self.main_app.rag_engine.get_stats()
+            except Exception:
+                stats = {}
+
+            chunk_count = stats.get("chunk_count", 0)
+            indexed = stats.get("indexed", False)
+
+            self.rag_chunks_lbl.setText(f"{chunk_count} chunks indexed")
+            self.rag_index_lbl.setText(f"Index: {chunk_count if indexed else 'None'}")
+            self.rag_status_lbl.setText("Active" if ok else "No data")
+
+            QMessageBox.information(
+                self,
+                "Indexing Complete",
+                f"Folder indexed: {folder}\nChunks: {chunk_count}"
+            )
         else:
             QMessageBox.warning(self, "RAG Not Available", "RAG engine is not initialized.")
     
@@ -724,21 +834,29 @@ class DevPanel(QDialog):
         self.model_status.setText(f"Loading {path}...")
         self.model_status.setStyleSheet("color: #ffd04d; padding: 8px;")
         QApplication.processEvents()
-        
-        try:
-            model, tokenizer = load(path)
-            if self.main_app:
-                self.main_app.model = model
-                self.main_app.tokenizer = tokenizer
-                self.main_app.current_model_path = path
-                self.main_app.model_lbl.setText(f"<b>{os.path.basename(path)}</b>")
-            self.model_status.setText(f"Loaded: {os.path.basename(path)}")
-            self.model_status.setStyleSheet("color: #4dff9f; padding: 8px;")
-            QMessageBox.information(self, "Model Loaded", f"Successfully loaded model from:\n{path}")
-        except Exception as e:
-            self.model_status.setText(f"Error: {str(e)}")
-            self.model_status.setStyleSheet("color: #ff4d6a; padding: 8px;")
-            QMessageBox.critical(self, "Load Error", f"Failed to load model:\n{str(e)}")
+
+        if self.main_app:
+            self.main_app.service_status_lbl.setText("Service: loading…")
+            self.main_app._set_chat_enabled(False)
+
+        self._model_loader = ModelLoaderWorker(path)
+        self._model_loader.loaded.connect(self._on_model_loaded)
+        self._model_loader.error.connect(self._on_model_load_error)
+        self._model_loader.start()
+
+    def _on_model_loaded(self, model, tokenizer, model_path: str) -> None:
+        if self.main_app:
+            self.main_app._on_model_loaded(model, tokenizer, model_path)
+        self.model_status.setText(f"Loaded: {os.path.basename(model_path)}")
+        self.model_status.setStyleSheet("color: #4dff9f; padding: 8px;")
+        QMessageBox.information(self, "Model Loaded", f"Successfully loaded model from:\n{model_path}")
+
+    def _on_model_load_error(self, err: str) -> None:
+        if self.main_app:
+            self.main_app._on_model_load_error(err)
+        self.model_status.setText(f"Error: {err}")
+        self.model_status.setStyleSheet("color: #ff4d6a; padding: 8px;")
+        QMessageBox.critical(self, "Load Error", f"Failed to load model:\n{err}")
     
     def build_testing_tab(self):
         widget = QWidget()
@@ -781,6 +899,34 @@ class DevPanel(QDialog):
         
         stress_box.setLayout(s_layout)
         layout.addWidget(stress_box)
+
+        smoke_box = QGroupBox("Regression Smoke Tests")
+        sm_layout = QVBoxLayout()
+        sm_desc = QLabel("Quick checks for prompts.json loading, theme switching, and core UI wiring.")
+        sm_desc.setStyleSheet("color: #888; font-size: 12px;")
+        sm_layout.addWidget(sm_desc)
+        smoke_btn = QPushButton("▶ Run Smoke Tests")
+        smoke_btn.clicked.connect(self.run_smoke_tests)
+        sm_layout.addWidget(smoke_btn)
+        self.smoke_result = QLabel("No smoke tests run yet")
+        self.smoke_result.setStyleSheet("color: #888; padding: 8px;")
+        sm_layout.addWidget(self.smoke_result)
+        smoke_box.setLayout(sm_layout)
+        layout.addWidget(smoke_box)
+
+        perf_box = QGroupBox("Performance Benchmark")
+        p_layout = QVBoxLayout()
+        p_desc = QLabel("Measures generation throughput on the currently loaded model (small run).")
+        p_desc.setStyleSheet("color: #888; font-size: 12px;")
+        p_layout.addWidget(p_desc)
+        perf_btn = QPushButton("▶ Run Throughput Benchmark")
+        perf_btn.clicked.connect(self.run_throughput_benchmark)
+        p_layout.addWidget(perf_btn)
+        self.perf_result = QLabel("No benchmark run yet")
+        self.perf_result.setStyleSheet("color: #888; padding: 8px;")
+        p_layout.addWidget(self.perf_result)
+        perf_box.setLayout(p_layout)
+        layout.addWidget(perf_box)
         
         # RAM Monitor
         ram_box = QGroupBox("RAM Monitor")
@@ -841,6 +987,64 @@ class DevPanel(QDialog):
         
         self.stress_result.setText("Stress test complete. No issues detected.")
         self.stress_result.setStyleSheet("color: #4dff9f; padding: 8px;")
+
+    def run_smoke_tests(self):
+        ok = True
+        problems = []
+
+        if not self.main_app:
+            self.smoke_result.setText("Smoke tests unavailable: no main app reference")
+            self.smoke_result.setStyleSheet("color: #ff4d6a; padding: 8px;")
+            return
+
+        try:
+            prompts = self.main_app.load_prompts()
+            if not isinstance(prompts, dict):
+                ok = False
+                problems.append("prompts.json did not load as dict")
+        except Exception as e:
+            ok = False
+            problems.append(f"prompts load failed: {e}")
+
+        try:
+            self.main_app.apply_theme("dark")
+            self.main_app.apply_theme("light")
+            self.main_app.apply_theme("system")
+            self.main_app.apply_theme(self.main_app.prompts.get("theme", "dark"))
+        except Exception as e:
+            ok = False
+            problems.append(f"theme switching failed: {e}")
+
+        if ok:
+            self.smoke_result.setText("OK: prompts load + theme switching + UI wiring")
+            self.smoke_result.setStyleSheet("color: #4dff9f; padding: 8px;")
+        else:
+            self.smoke_result.setText("FAILED: " + " | ".join(problems))
+            self.smoke_result.setStyleSheet("color: #ff4d6a; padding: 8px;")
+
+    def run_throughput_benchmark(self):
+        if not self.main_app or self.main_app.model is None or self.main_app.tokenizer is None:
+            self.perf_result.setText("Benchmark requires a loaded model.")
+            self.perf_result.setStyleSheet("color: #ff4d6a; padding: 8px;")
+            return
+
+        self.perf_result.setText("Running benchmark…")
+        self.perf_result.setStyleSheet("color: #ffd04d; padding: 8px;")
+        QApplication.processEvents()
+
+        prompt = "Write a short Python function that adds two numbers."
+        self._bench_worker = BenchmarkWorker(self.main_app.model, self.main_app.tokenizer, prompt, max_tokens=128)
+        self._bench_worker.finished.connect(self._on_benchmark_done)
+        self._bench_worker.error.connect(self._on_benchmark_error)
+        self._bench_worker.start()
+
+    def _on_benchmark_done(self, tps: float, tokens: int, elapsed: float, sample: str):
+        self.perf_result.setText(f"{tps:.2f} tok/s | {tokens} tokens | {elapsed:.2f}s")
+        self.perf_result.setStyleSheet("color: #4dff9f; padding: 8px;")
+
+    def _on_benchmark_error(self, err: str):
+        self.perf_result.setText(f"Benchmark failed: {err}")
+        self.perf_result.setStyleSheet("color: #ff4d6a; padding: 8px;")
     
     def start_ram_monitor(self):
         self.ram_log.appendPlainText("RAM Monitor started...")
@@ -870,7 +1074,6 @@ class DevPanel(QDialog):
             "Unrestricted Mode bypasses the 'Ask Before Acting' safety rule.\n\n"
             "When enabled:\n"
             "• Model generates code directly without clarification questions\n"
-            "• Model may answer potentially harmful or unethical queries\n"
             "• Use only in controlled environments\n\n"
             "This is intended for testing the model's baseline behavior."
         )
@@ -901,7 +1104,7 @@ class DevPanel(QDialog):
             self.unrestricted_status.setStyleSheet("color: #ff4d6a; font-size: 18px; font-weight: bold; padding: 20px;")
             if self.main_app:
                 self.main_app.unrestricted_mode = True
-                self.main_app.system_prompt = "You are FoxAI, a helpful assistant. Answer directly without asking questions."
+                self.main_app.system_prompt = "You are FoxAI, a helpful assistant. Answer directly without asking clarifying questions."
         else:
             self.unrestricted_enabled.setText("Enable Unrestricted Mode")
             self.unrestricted_status.setText("Status: DISABLED")
@@ -918,8 +1121,10 @@ class ChatbotGUI(QWidget):
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
-        self.current_model_path = model_path
+        self.current_model_path = model_path or ""
         self.unrestricted_mode = False
+        self.dev_mode_active = False
+        self.dev_sidebar_shown = False
         
         # Engines
         try:
@@ -935,6 +1140,8 @@ class ChatbotGUI(QWidget):
         self.original_system_prompt = self.prompts.get("system_prompt", "")
         self.system_prompt = self.original_system_prompt
         self.user_prompt = self.prompts.get("user_prompt", "You are a helpful assistant.")
+        self.theme = self.prompts.get("theme", "dark")
+        self.current_model_path = self.prompts.get("model_path", self.current_model_path)
 
         # Chat Sessions Storage Mock
         self.chats = {"Default Chat": [{"role": "system", "content": self.system_prompt}]}
@@ -946,6 +1153,8 @@ class ChatbotGUI(QWidget):
         self.mem_thread = MemoryMonitor()
         self.mem_thread.update_signal.connect(self.update_hw_stats)
         self.mem_thread.start()
+
+        self.start_ai_service()
 
     def load_prompts(self) -> dict:
         """
@@ -965,7 +1174,9 @@ class ChatbotGUI(QWidget):
         default_prompts = {
             "system_prompt": "You are FoxAI, a local expert AI pair-programmer.\nYour core rule is: **ASK BEFORE ACTING**.\n\nBefore writing any code or providing a solution, you MUST:\n1. List EVERY unclear point or assumption in the user's request.\n2. Ask the user to clarify these points one by one.\n3. DO NOT write a single line of code until all questions are answered and the requirements are 100% clear.\n\nStyle rules:\n- Write production-grade, PEP8-compliant Python code.\n- Use type hints for all functions.\n- Be concise but thorough in your explanations.",
             "user_prompt": "You are a helpful AI assistant. Provide clear, concise, and accurate responses to the user's questions. Be friendly and professional.",
-            "unrestricted_prompt": "You are FoxAI, a helpful assistant. Answer directly without asking questions."
+            "unrestricted_prompt": "You are FoxAI, a helpful assistant. Answer directly without asking clarifying questions.",
+            "theme": "dark",
+            "model_path": ""
         }
 
         try:
@@ -1007,63 +1218,26 @@ class ChatbotGUI(QWidget):
     def init_ui(self):
         self.setWindowTitle(VERSION)
         self.setGeometry(100, 100, 1100, 750)
-        self.setStyleSheet("""
-            QWidget { 
-                background-color: #0f0f0f; 
-                color: #e0e0e0; 
-                font-family: "Helvetica Neue", Arial, sans-serif; 
-            }
-            QScrollBar:vertical {
-                border: none;
-                background: transparent;
-                width: 8px;
-                margin: 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #333;
-                min-height: 20px;
-                border-radius: 4px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
-        """)
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
         # ---------------- LEFT SIDEBAR (CHATS) ----------------
-        sidebar = QFrame()
-        sidebar.setFixedWidth(280)
-        sidebar.setStyleSheet("""
-            QFrame { 
-                background-color: #161616; 
-                border-right: 1px solid #222; 
-            }
-        """)
-        s_layout = QVBoxLayout(sidebar)
+        self.sidebar = QFrame()
+        self.sidebar.setObjectName("Sidebar")
+        self.sidebar.setFixedWidth(280)
+        s_layout = QVBoxLayout(self.sidebar)
         s_layout.setContentsMargins(15, 20, 15, 15)
         
         # Header
         top_bar = QHBoxLayout()
         logo = QLabel("FoxAI")
-        logo.setStyleSheet("font-size: 22px; font-weight: 800; color: #7c4dff;")
+        logo.setObjectName("Logo")
         
         new_chat_btn = QPushButton("+ New")
         new_chat_btn.setFixedSize(70, 32)
-        new_chat_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2a2a2a;
-                border: 1px solid #333;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #333;
-            }
-        """)
+        new_chat_btn.setObjectName("NewChatButton")
         new_chat_btn.clicked.connect(self.new_chat)
         
         top_bar.addWidget(logo)
@@ -1075,41 +1249,11 @@ class ChatbotGUI(QWidget):
         # Search
         search_bar = QLineEdit()
         search_bar.setPlaceholderText("Search chats...")
-        search_bar.setStyleSheet("""
-            QLineEdit {
-                background-color: #222;
-                border: 1px solid #333;
-                border-radius: 8px;
-                padding: 8px 12px;
-                color: #888;
-                font-size: 13px;
-            }
-        """)
         s_layout.addWidget(search_bar)
         s_layout.addSpacing(15)
         
         # Session List
         self.chat_list = QListWidget()
-        self.chat_list.setStyleSheet("""
-            QListWidget { 
-                background: transparent; 
-                border: none; 
-            }
-            QListWidget::item { 
-                padding: 12px; 
-                border-radius: 8px; 
-                margin-bottom: 2px;
-                color: #aaa;
-            }
-            QListWidget::item:hover {
-                background-color: #222;
-            }
-            QListWidget::item:selected { 
-                background-color: #2a2a2a; 
-                color: white; 
-                font-weight: 600;
-            }
-        """)
         self.chat_list.addItem(self.active_chat)
         self.chat_list.itemClicked.connect(self.switch_chat)
         s_layout.addWidget(self.chat_list)
@@ -1117,141 +1261,97 @@ class ChatbotGUI(QWidget):
         s_layout.addStretch()
         
         # Hardware Status Bottom
-        hw_box = QFrame()
-        hw_box.setStyleSheet("""
-            QFrame {
-                background-color: #222;
-                border-radius: 10px;
-                padding: 10px;
-            }
-            QLabel {
-                background: transparent;
-                font-size: 11px;
-                color: #888;
-            }
-        """)
-        hw_layout = QVBoxLayout(hw_box)
+        self.hw_box = QFrame()
+        self.hw_box.setObjectName("HwBox")
+        hw_layout = QVBoxLayout(self.hw_box)
         
         ram_row = QHBoxLayout()
-        ram_row.addWidget(QLabel("RAM Usage"))
+        ram_row.addWidget(QLabel("RAM (App)"))
         ram_row.addStretch()
-        self.lbl_ram_raw = QLabel("0 GB")
+        self.lbl_ram_raw = QLabel("0.00 GB")
         ram_row.addWidget(self.lbl_ram_raw)
         hw_layout.addLayout(ram_row)
+
+        sys_ram_row = QHBoxLayout()
+        sys_ram_row.addWidget(QLabel("RAM (System)"))
+        sys_ram_row.addStretch()
+        self.lbl_sys_ram_pct = QLabel("0.0%")
+        sys_ram_row.addWidget(self.lbl_sys_ram_pct)
+        hw_layout.addLayout(sys_ram_row)
         
         sys_row = QHBoxLayout()
-        sys_row.addWidget(QLabel("System Load"))
+        sys_row.addWidget(QLabel("CPU"))
         sys_row.addStretch()
-        self.lbl_ram_pct = QLabel("0.0%")
-        sys_row.addWidget(self.lbl_ram_pct)
+        self.lbl_cpu_pct = QLabel("0.0%")
+        sys_row.addWidget(self.lbl_cpu_pct)
         hw_layout.addLayout(sys_row)
+
+        gpu_row = QHBoxLayout()
+        gpu_row.addWidget(QLabel("GPU"))
+        gpu_row.addStretch()
+        self.lbl_gpu_pct = QLabel("N/A")
+        gpu_row.addWidget(self.lbl_gpu_pct)
+        hw_layout.addLayout(gpu_row)
         
-        s_layout.addWidget(hw_box)
+        s_layout.addWidget(self.hw_box)
         s_layout.addSpacing(10)
         
         settings_btn = QPushButton("⚙ Settings")
-        settings_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                color: #888;
-                border: 1px solid #333;
-                border-radius: 6px;
-                padding: 8px;
-                text-align: left;
-            }
-            QPushButton:hover {
-                background-color: #222;
-                color: white;
-            }
-        """)
+        settings_btn.setObjectName("SettingsButton")
         settings_btn.clicked.connect(self.open_settings)
         s_layout.addWidget(settings_btn)
         
         dev_btn = QPushButton("🔧 Dev Mode")
-        dev_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #1a1a2a;
-                color: #7c4dff;
-                border: 1px solid #3a3a5a;
-                border-radius: 6px;
-                padding: 8px;
-                text-align: left;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #2a2a4a;
-            }
-        """)
+        dev_btn.setObjectName("DevUnlockButton")
         dev_btn.clicked.connect(self.open_dev_panel)
         s_layout.addWidget(dev_btn)
 
         # ---------------- RIGHT MAIN AREA ----------------
-        main_area = QFrame()
-        m_layout = QVBoxLayout(main_area)
+        self.main_area = QFrame()
+        self.main_area.setObjectName("MainArea")
+        m_layout = QVBoxLayout(self.main_area)
         m_layout.setContentsMargins(0, 0, 0, 0)
         m_layout.setSpacing(0)
         
         # Header Info
-        header_area = QFrame()
-        header_area.setFixedHeight(60)
-        header_area.setStyleSheet("background-color: #111; border-bottom: 1px solid #222;")
-        h_layout = QHBoxLayout(header_area)
-        
-        self.model_lbl = QLabel("<b>Qwen 3.5 27B</b> · Claude 4.6 Distilled")
-        self.model_lbl.setStyleSheet("color: #7c4dff; font-size: 14px;")
+        self.header_area = QFrame()
+        self.header_area.setObjectName("HeaderArea")
+        self.header_area.setFixedHeight(60)
+        h_layout = QHBoxLayout(self.header_area)
+
         h_layout.addSpacing(20)
-        h_layout.addWidget(self.model_lbl)
+        self.service_status_lbl = QLabel("Service: starting…")
+        h_layout.addWidget(self.service_status_lbl)
         h_layout.addStretch()
+
+        self.dev_toggle_btn = QPushButton("Dev")
+        self.dev_toggle_btn.setFixedSize(54, 28)
+        self.dev_toggle_btn.setVisible(False)
+        self.dev_toggle_btn.clicked.connect(self.toggle_dev_sidebar)
+        h_layout.addWidget(self.dev_toggle_btn)
         
         self.rag_badge = QLabel("RAG: OFF")
-        self.rag_badge.setStyleSheet("""
-            QLabel {
-                background-color: #1a1a1a;
-                border: 1px solid #333;
-                border-radius: 12px;
-                padding: 4px 12px;
-                font-size: 11px;
-                color: #666;
-            }
-        """)
         h_layout.addWidget(self.rag_badge)
         h_layout.addSpacing(20)
         
-        m_layout.addWidget(header_area)
+        m_layout.addWidget(self.header_area)
         
         self.chat_display = QTextEdit()
         self.chat_display.setReadOnly(True)
-        self.chat_display.setStyleSheet("""
-            QTextEdit {
-                background-color: #0f0f0f;
-                border: none;
-                font-size: 15px;
-                padding: 30px;
-                line-height: 1.6;
-            }
-        """)
         m_layout.addWidget(self.chat_display)
         
         # Input Area Wrapper
-        input_container = QFrame()
-        input_container.setStyleSheet("background-color: #161616; border-top: 1px solid #222;")
-        ic_layout = QVBoxLayout(input_container)
+        self.input_container = QFrame()
+        self.input_container.setObjectName("InputContainer")
+        ic_layout = QVBoxLayout(self.input_container)
         ic_layout.setContentsMargins(60, 20, 60, 30)
         
-        input_box = QFrame()
-        input_box.setStyleSheet("""
-            QFrame {
-                background-color: #222;
-                border: 1px solid #333;
-                border-radius: 12px;
-                padding: 5px;
-            }
-        """)
-        ib_layout = QVBoxLayout(input_box)
+        self.input_box = QFrame()
+        self.input_box.setObjectName("InputBox")
+        ib_layout = QVBoxLayout(self.input_box)
         
         self.input_field = QLineEdit()
         self.input_field.setPlaceholderText("Send a message to the model...")
-        self.input_field.setStyleSheet("background: transparent; border: none; font-size: 14px; padding: 10px; color: white;")
         self.input_field.returnPressed.connect(self.soru_sor)
         ib_layout.addWidget(self.input_field)
         
@@ -1263,11 +1363,9 @@ class ChatbotGUI(QWidget):
         tool_layout.setSpacing(8)
         
         btn_rag = QPushButton("📂 Files")
-        btn_rag.setStyleSheet("background: transparent; color: #888; font-size: 12px; border: none;")
         btn_rag.clicked.connect(lambda: QMessageBox.information(self, "RAG", "Index your files for context!"))
         
         btn_code = QPushButton("⚡ Run")
-        btn_code.setStyleSheet("background: transparent; color: #888; font-size: 12px; border: none;")
         btn_code.clicked.connect(self.run_last_code)
 
         tool_layout.addWidget(btn_rag)
@@ -1276,50 +1374,333 @@ class ChatbotGUI(QWidget):
         send_btn = QPushButton("↑")
         send_btn.setFixedSize(32, 32)
         send_btn.setCursor(Qt.PointingHandCursor)
-        send_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #7c4dff;
-                color: white;
-                border-radius: 16px;
-                font-weight: bold;
-                font-size: 18px;
-            }
-            QPushButton:hover {
-                background-color: #9575cd;
-            }
-            QPushButton:disabled {
-                background-color: #333;
-                color: #666;
-            }
-        """)
         send_btn.clicked.connect(self.soru_sor)
         self.send_btn = send_btn
         
         btm_input_bar.addLayout(tool_layout)
+        self.gen_status_lbl = QLabel("")
+        btm_input_bar.addWidget(self.gen_status_lbl)
         btm_input_bar.addStretch()
         btm_input_bar.addWidget(send_btn)
         ib_layout.addLayout(btm_input_bar)
 
-        ic_layout.addWidget(input_box)
-        m_layout.addWidget(input_container)
+        ic_layout.addWidget(self.input_box)
+        m_layout.addWidget(self.input_container)
+
+        # ---------------- RIGHT DEV SIDEBAR (HIDDEN BY DEFAULT) ----------------
+        self.dev_sidebar = QFrame()
+        self.dev_sidebar.setObjectName("DevSidebar")
+        self.dev_sidebar.setFixedWidth(420)
+        self.dev_sidebar.setVisible(False)
+        dev_layout = QVBoxLayout(self.dev_sidebar)
+        dev_layout.setContentsMargins(10, 10, 10, 10)
+        self.dev_panel = DevPanel(self.dev_sidebar, main_app=self)
+        dev_layout.addWidget(self.dev_panel)
 
         # Assemble
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(sidebar)
-        splitter.addWidget(main_area)
-        splitter.setSizes([260, 840])
+        self.splitter = splitter
+        splitter.addWidget(self.sidebar)
+        splitter.addWidget(self.main_area)
+        splitter.addWidget(self.dev_sidebar)
+        splitter.setSizes([260, 840, 0])
         main_layout.addWidget(splitter)
 
-    def update_hw_stats(self, ram_gb, ram_pct):
-        self.lbl_ram_raw.setText(f"💾 {ram_gb}")
-        self.lbl_ram_pct.setText(f"⚙ {ram_pct}")
+        self.apply_theme(self.prompts.get("theme", "dark"))
+
+    def detect_system_theme(self) -> str:
+        pal = QApplication.instance().palette()
+        window = pal.color(QPalette.Window)
+        return "dark" if window.lightness() < 128 else "light"
+
+    def apply_theme(self, theme: str) -> None:
+        if theme == "system":
+            theme = self.detect_system_theme()
+
+        self.theme = theme
+
+        if theme == "light":
+            colors = {
+                "bg": "#f5f5f7",
+                "panel": "#ffffff",
+                "panel2": "#f0f0f2",
+                "border": "#d0d0d7",
+                "text": "#111111",
+                "muted": "#666666",
+                "accent": "#6a3dff",
+                "accent2": "#4d74ff",
+                "danger": "#c62828",
+                "chip": "#e9e9ef",
+            }
+        else:
+            colors = {
+                "bg": "#0f0f0f",
+                "panel": "#161616",
+                "panel2": "#222222",
+                "border": "#222222",
+                "text": "#e0e0e0",
+                "muted": "#888888",
+                "accent": "#7c4dff",
+                "accent2": "#9575cd",
+                "danger": "#ff4d6a",
+                "chip": "#1a1a1a",
+            }
+
+        qss = f"""
+            QWidget {{
+                background-color: {colors['bg']};
+                color: {colors['text']};
+                font-family: "Helvetica Neue", Arial, sans-serif;
+            }}
+            QLabel#Logo {{
+                font-size: 22px;
+                font-weight: 800;
+                color: {colors['accent']};
+            }}
+            QLabel#DevHeader {{
+                font-size: 16px;
+                font-weight: 800;
+                color: {colors['accent']};
+                padding: 6px 4px;
+            }}
+            QFrame#Sidebar {{
+                background-color: {colors['panel']};
+                border-right: 1px solid {colors['border']};
+            }}
+            QFrame#DevSidebar {{
+                background-color: {colors['panel']};
+                border-left: 1px solid {colors['border']};
+            }}
+            QFrame#HeaderArea {{
+                background-color: {colors['panel']};
+                border-bottom: 1px solid {colors['border']};
+            }}
+            QFrame#HwBox {{
+                background-color: {colors['panel2']};
+                border-radius: 10px;
+            }}
+            QTabWidget::pane {{
+                border: 1px solid {colors['border']};
+                background: {colors['panel']};
+                border-radius: 8px;
+            }}
+            QTabBar::tab {{
+                background: {colors['panel2']};
+                color: {colors['muted']};
+                padding: 8px 12px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                margin-right: 4px;
+            }}
+            QTabBar::tab:selected {{
+                background: {colors['chip']};
+                color: {colors['text']};
+            }}
+            QGroupBox {{
+                border: 1px solid {colors['border']};
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 12px;
+                font-weight: 700;
+                color: {colors['accent']};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }}
+            QListWidget {{
+                background: transparent;
+                border: none;
+            }}
+            QListWidget::item {{
+                padding: 12px;
+                border-radius: 8px;
+                margin-bottom: 2px;
+                color: {colors['muted']};
+            }}
+            QListWidget::item:hover {{
+                background-color: {colors['panel2']};
+            }}
+            QListWidget::item:selected {{
+                background-color: {colors['chip']};
+                color: {colors['text']};
+                font-weight: 600;
+            }}
+            QTextEdit {{
+                background-color: {colors['bg']};
+                border: none;
+                font-size: 15px;
+                padding: 30px;
+            }}
+            QLineEdit {{
+                background-color: {colors['chip']};
+                border: 1px solid {colors['border']};
+                border-radius: 8px;
+                padding: 8px 12px;
+                color: {colors['text']};
+                font-size: 13px;
+            }}
+            QFrame#InputContainer {{
+                background-color: {colors['panel']};
+                border-top: 1px solid {colors['border']};
+            }}
+            QFrame#InputBox {{
+                background-color: {colors['panel2']};
+                border: 1px solid {colors['border']};
+                border-radius: 12px;
+            }}
+            QPushButton {{
+                background-color: {colors['panel2']};
+                border: 1px solid {colors['border']};
+                border-radius: 6px;
+                padding: 6px 10px;
+                color: {colors['text']};
+            }}
+            QPushButton:hover {{
+                background-color: {colors['chip']};
+            }}
+            QPushButton:disabled {{
+                background-color: {colors['chip']};
+                color: {colors['muted']};
+            }}
+            QPushButton#NewChatButton {{
+                font-weight: 700;
+            }}
+            QPushButton#SettingsButton {{
+                text-align: left;
+            }}
+            QPushButton#DevUnlockButton {{
+                background-color: {colors['chip']};
+                border: 1px solid {colors['border']};
+                color: {colors['accent']};
+                font-weight: 700;
+                text-align: left;
+            }}
+            QPushButton#SendButton {{
+                background-color: {colors['accent']};
+                color: white;
+                border-radius: 16px;
+                font-weight: bold;
+                font-size: 18px;
+                padding: 0px;
+            }}
+            QPushButton#SendButton:hover {{
+                background-color: {colors['accent2']};
+            }}
+            QLabel#RagBadge {{
+                background-color: {colors['chip']};
+                border: 1px solid {colors['border']};
+                border-radius: 12px;
+                padding: 4px 12px;
+                font-size: 11px;
+                color: {colors['muted']};
+            }}
+            QLabel#RagBadge[ragState="active"] {{
+                background-color: {colors['panel2']};
+                border: 1px solid {colors['accent2']};
+                color: {colors['accent']};
+            }}
+            QLabel#RagBadge[ragState="empty"] {{
+                background-color: {colors['chip']};
+                border: 1px solid {colors['border']};
+                color: {colors['muted']};
+            }}
+            QLabel#RagBadge[ragState="off"] {{
+                background-color: {colors['chip']};
+                border: 1px solid {colors['border']};
+                color: {colors['muted']};
+            }}
+            QScrollBar:vertical {{
+                border: none;
+                background: transparent;
+                width: 8px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {colors['border']};
+                min-height: 20px;
+                border-radius: 4px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+        """
+
+        QApplication.instance().setStyleSheet(qss)
+        self.send_btn.setObjectName("SendButton")
+        self.rag_badge.setObjectName("RagBadge")
+
+    def update_hw_stats(self, app_ram_gb: str, sys_ram_percent: str, cpu_percent: str, gpu_percent: str):
+        self.lbl_ram_raw.setText(app_ram_gb)
+        self.lbl_sys_ram_pct.setText(sys_ram_percent)
+        self.lbl_cpu_pct.setText(cpu_percent)
+        self.lbl_gpu_pct.setText(gpu_percent)
+
+    def _set_chat_enabled(self, enabled: bool) -> None:
+        self.input_field.setEnabled(enabled)
+        self.send_btn.setEnabled(enabled)
+        if enabled:
+            self.input_field.setFocus()
+
+    def _find_default_model_path(self) -> str:
+        if self.current_model_path and os.path.isdir(self.current_model_path):
+            return self.current_model_path
+
+        candidates = []
+        base = os.path.expanduser("~/.lmstudio/models")
+        if os.path.isdir(base):
+            for root, dirs, _files in os.walk(base):
+                for d in dirs:
+                    full = os.path.join(root, d)
+                    if not os.path.isdir(full):
+                        continue
+                    if "mlx" not in full.lower():
+                        continue
+                    has_config = os.path.exists(os.path.join(full, "config.json"))
+                    has_tokenizer = os.path.exists(os.path.join(full, "tokenizer.json")) or os.path.exists(os.path.join(full, "tokenizer.model"))
+                    has_weights = any(
+                        name.endswith((".safetensors", ".npz", ".bin"))
+                        for name in os.listdir(full)
+                        if os.path.isfile(os.path.join(full, name))
+                    )
+                    if has_config or has_tokenizer or has_weights:
+                        candidates.append(full)
+        return candidates[0] if candidates else ""
+
+    def start_ai_service(self) -> None:
+        self._set_chat_enabled(False)
+        model_path = self._find_default_model_path()
+        if not model_path:
+            self.service_status_lbl.setText("Service: model path not found")
+            return
+
+        self.service_status_lbl.setText("Service: loading…")
+        self.model_loader = ModelLoaderWorker(model_path)
+        self.model_loader.loaded.connect(self._on_model_loaded)
+        self.model_loader.error.connect(self._on_model_load_error)
+        self.model_loader.start()
+
+    def _on_model_loaded(self, model, tokenizer, model_path: str) -> None:
+        self.model = model
+        self.tokenizer = tokenizer
+        self.current_model_path = model_path
+        self.prompts["model_path"] = model_path
+        self.save_prompts(self.prompts)
+        self.service_status_lbl.setText("Service: ready")
+        self._set_chat_enabled(True)
+
+    def _on_model_load_error(self, err: str) -> None:
+        self.model = None
+        self.tokenizer = None
+        self.service_status_lbl.setText("Service: error")
+        self._set_chat_enabled(False)
+        self.chat_display.append(f"<div style='color: #ff5555; '><b>Model load error:</b> {err}</div><br>")
 
     def open_settings(self):
-        # Pass user_prompt only - system_prompt is NOT editable in regular Settings
-        diag = SettingsDialog(self, self.user_prompt)
+        diag = SettingsDialog(self, self.user_prompt, current_theme=self.theme)
         if diag.exec_():
-            # user_prompt is saved inside accept_settings() via save_prompts()
-            pass  # No system prompt changes from Settings - that's Dev Mode only
+            self.apply_theme(getattr(diag, "final_theme", self.theme))
 
     def open_dev_panel(self):
         if not dev_mode_gate.unlocked:
@@ -1330,10 +1711,27 @@ class ChatbotGUI(QWidget):
                 QMessageBox.critical(self, "Access Denied", "Incorrect password for Dev Mode.")
                 return
             QMessageBox.information(self, "Dev Mode", "Dev Mode unlocked successfully!")
-        
-        self.dev_panel = DevPanel(self, main_app=self)
-        self.dev_panel.exec_()
-        dev_mode_gate.lock()
+
+        self.dev_mode_active = True
+        self.dev_toggle_btn.setVisible(True)
+        self.toggle_dev_sidebar(force_state=True)
+
+    def toggle_dev_sidebar(self, force_state=None) -> None:
+        if not self.dev_mode_active:
+            return
+
+        if force_state is True:
+            self.dev_sidebar_shown = True
+        elif force_state is False:
+            self.dev_sidebar_shown = False
+        else:
+            self.dev_sidebar_shown = not self.dev_sidebar_shown
+
+        self.dev_sidebar.setVisible(self.dev_sidebar_shown)
+        if self.dev_sidebar_shown:
+            self.splitter.setSizes([260, 700, 420])
+        else:
+            self.splitter.setSizes([260, 840, 0])
 
     def new_chat(self):
         title, ok = QInputDialog.getText(self, "New Chat", "Chat Name:")
@@ -1357,7 +1755,14 @@ class ChatbotGUI(QWidget):
 
     def soru_sor(self):
         user_text = self.input_field.text().strip()
-        if not user_text: return
+        if not user_text:
+            return
+
+        if self.model is None or self.tokenizer is None:
+            self.chat_display.append("<div style='color: #ff5555; '><b>Service not ready:</b> Model is not loaded.</div><br>")
+            self.input_field.setText(user_text)
+            self.input_field.setFocus()
+            return
         self.input_field.clear()
         
         # Display user message
@@ -1373,9 +1778,14 @@ class ChatbotGUI(QWidget):
             if rag_docs:
                 context_prompt = f"Background info:\n{rag_docs}\n\nUser: {user_text}"
                 self.rag_badge.setText("RAG: ACTIVE")
-                self.rag_badge.setStyleSheet("background-color: #1a3a5c; border: 1px solid #1a5c3a; border-radius: 12px; padding: 4px 12px; font-size: 11px; color: #4dff9f;")
+                self.rag_badge.setProperty("ragState", "active")
+                self.rag_badge.style().unpolish(self.rag_badge)
+                self.rag_badge.style().polish(self.rag_badge)
             else:
                 self.rag_badge.setText("RAG: EMPTY")
+                self.rag_badge.setProperty("ragState", "empty")
+                self.rag_badge.style().unpolish(self.rag_badge)
+                self.rag_badge.style().polish(self.rag_badge)
         
         temp_history = list(self.chats[self.active_chat])
         temp_history[-1] = {"role": "user", "content": context_prompt}
@@ -1389,6 +1799,7 @@ class ChatbotGUI(QWidget):
 
         self.input_field.setDisabled(True)
         self.send_btn.setDisabled(True)
+        self.gen_status_lbl.setText("Generating…")
         
         # Prepare for assistant response
         self.current_assistant_bubble = self.add_chat_bubble("FoxAI", "", is_user=False)
@@ -1476,13 +1887,19 @@ class ChatbotGUI(QWidget):
         
         self.input_field.setDisabled(False)
         self.send_btn.setDisabled(False)
+        self.gen_status_lbl.setText("")
         self.input_field.setFocus()
         self.rag_badge.setText("RAG: OFF")
-        self.rag_badge.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 4px 12px; font-size: 11px; color: #666;")
+        self.rag_badge.setProperty("ragState", "off")
+        self.rag_badge.style().unpolish(self.rag_badge)
+        self.rag_badge.style().polish(self.rag_badge)
 
     def on_ai_error(self, err_msg):
         self.chat_display.append(f"<div style='color: #ff5555; '><b>Error:</b> {err_msg}</div><br>")
         self.input_field.setDisabled(False)
+        self.send_btn.setDisabled(False)
+        self.gen_status_lbl.setText("")
+        self.input_field.setFocus()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -1490,15 +1907,7 @@ if __name__ == "__main__":
     # Standard font setup to avoid warnings
     font = QFont("Helvetica Neue", 13)
     app.setFont(font)
-    
-    # ML extraction boot
-    model_path = "/Users/fox/.lmstudio/models/mlx-community/MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-6bit"
-    try:
-        model, tokenizer = load(model_path)
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        model, tokenizer = None, None
-        
-    window = ChatbotGUI(model, tokenizer, model_path)
+
+    window = ChatbotGUI(None, None, "")
     window.show()
     sys.exit(app.exec_())
