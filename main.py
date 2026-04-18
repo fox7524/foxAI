@@ -65,7 +65,6 @@ import re
 import glob
 import subprocess
 import psutil
-from collections import deque
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit, QLineEdit,
     QPushButton, QHBoxLayout, QLabel, QSplitter, QDialog,
@@ -74,10 +73,10 @@ from PyQt5.QtWidgets import (
     QInputDialog, QTabWidget, QCheckBox, QSpinBox, QSlider,
     QComboBox, QTextBrowser, QProgressBar, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView, QGroupBox,
-    QGridLayout, QPlainTextEdit, QDoubleSpinBox
+    QGridLayout, QPlainTextEdit, QDoubleSpinBox, QToolButton, QMenu, QAction
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
-from PyQt5.QtGui import QFont, QColor, QTextCursor, QPalette, QIcon, QPainter, QPen
+from PyQt5.QtGui import QFont, QTextCursor, QPalette, QColor, QTextCharFormat
 
 # mlx_lm: Apple's MLX framework for local LLM inference
 # - load(): Load a model and tokenizer from a path
@@ -94,7 +93,7 @@ except ImportError:
     pass
 
 # Application version and dev mode password
-VERSION = "FoxAI - Studio Edition"
+VERSION = "FoxAI - Developer Edition"
 DEV_MODE_PASSWORD = "123"
 
 # ---------------------------------------------------------
@@ -111,7 +110,10 @@ class ModelLoaderWorker(QThread):
 
     def run(self):
         try:
-            model, tokenizer = load(self.model_path, tokenizer_config={"fix_mistral_regex": True})
+            try:
+                model, tokenizer = load(self.model_path, tokenizer_config={"fix_mistral_regex": True})
+            except TypeError:
+                model, tokenizer = load(self.model_path)
             self._ensure_special_tokens(tokenizer)
             self.loaded.emit(model, tokenizer, self.model_path)
         except Exception as e:
@@ -162,7 +164,7 @@ class AIWorker(QThread):
     # Signal emitted when a new token is generated (for streaming)
     new_token = pyqtSignal(str)
     # Signal emitted when generation completes: (full_response, tokens_per_sec, total_tokens, elapsed_time)
-    finished = pyqtSignal(str, float, int, float)
+    finished = pyqtSignal(str, float, int, float, float)
     # Signal emitted on error: error message
     error = pyqtSignal(str)
 
@@ -196,23 +198,37 @@ class AIWorker(QThread):
 
             start_time = time.time()
             full_response = ""
+            accumulated = ""
             token_count = 0
+            peak_memory_gb = 0.0
 
             # Iterate through streaming response
-            # stream_generate yields accumulated text, not individual tokens
+            # stream_generate yields GenerationResponse objects (incremental tokens)
             for response in stream_generate(self.model, self.tokenizer, prompt=self.prompt, max_tokens=1500):
                 # Check if stop was requested (e.g., user clicked stop button)
                 if not self.is_running:
                     break
 
-                # Extract just the NEW portion since last iteration
-                # response is cumulative, so len(full_response) gives us where we left off
-                new_part = response[len(full_response):]
-                full_response = response
+                piece = getattr(response, "text", None)
+                if piece is None:
+                    piece = str(response)
+
+                pm = getattr(response, "peak_memory", None)
+                if isinstance(pm, (int, float)) and pm > peak_memory_gb:
+                    peak_memory_gb = float(pm)
+
+                if isinstance(piece, str) and piece.startswith(accumulated):
+                    delta = piece[len(accumulated):]
+                    accumulated = piece
+                else:
+                    delta = piece
+                    accumulated += piece
+
+                full_response += delta
                 token_count += 1
 
                 # Emit new token for live display
-                self.new_token.emit(new_part)
+                self.new_token.emit(delta)
 
             # Calculate metrics
             end_time = time.time()
@@ -220,7 +236,7 @@ class AIWorker(QThread):
             tok_per_sec = token_count / elapsed if elapsed > 0 else 0.0
 
             # Emit completion signal with results
-            self.finished.emit(full_response, tok_per_sec, token_count, elapsed)
+            self.finished.emit(full_response, tok_per_sec, token_count, elapsed, peak_memory_gb)
 
         except Exception as e:
             # Emit error signal if something goes wrong
@@ -376,9 +392,9 @@ class SettingsDialog(QDialog):
         # Theme Section
         layout.addWidget(QLabel("<b>Theme:</b>"))
         theme_layout = QHBoxLayout()
-        self.rb_dark = QRadioButton("🌙 Dark Studio")
-        self.rb_light = QRadioButton("☀️ Light")
-        self.rb_system = QRadioButton("🖥 System")
+        self.rb_dark = QRadioButton("Dark")
+        self.rb_light = QRadioButton("Light")
+        self.rb_system = QRadioButton("System")
 
         if current_theme == "system":
             self.rb_system.setChecked(True)
@@ -396,13 +412,13 @@ class SettingsDialog(QDialog):
         layout.addSpacing(15)
 
         # Roadmap Button
-        roadmap_btn = QPushButton("📋 View Project Roadmap")
+        roadmap_btn = QPushButton("View Project Roadmap")
         roadmap_btn.setStyleSheet("background-color: #1a3a5c; color: #4d9fff;")
         roadmap_btn.clicked.connect(self.show_roadmap)
         layout.addWidget(roadmap_btn)
 
         # Dev Mode Note
-        dev_note = QLabel("🔒 System prompt is only editable in Dev Mode (Settings → Dev Mode)")
+        dev_note = QLabel("System prompt is only editable in Dev Mode (Settings → Dev Mode)")
         dev_note.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
         layout.addWidget(dev_note)
 
@@ -502,13 +518,13 @@ class DevPanel(QWidget):
         # TAB 1: RAG CONTROLS
         tabs.addTab(self.build_rag_tab(), "RAG Indexer")
         # TAB 2: FINE-TUNING
-        tabs.addTab(self.build_finetune_tab(), "⚡ Fine-tune")
+        tabs.addTab(self.build_finetune_tab(), "Fine-tune")
         # TAB 3: MODEL SELECTOR
         tabs.addTab(self.build_model_tab(), "Model")
         # TAB 4: TESTING
         tabs.addTab(self.build_testing_tab(), "Testing")
         # TAB 5: UNRESTRICTED MODE
-        tabs.addTab(self.build_unrestricted_tab(), "⚠ Unrestricted")
+        tabs.addTab(self.build_unrestricted_tab(), "Unrestricted")
         
         layout.addWidget(tabs)
         
@@ -706,12 +722,12 @@ class DevPanel(QWidget):
         
         # Control buttons
         btn_row = QHBoxLayout()
-        start_train_btn = QPushButton("▶ Start Training")
+        start_train_btn = QPushButton("Start Training")
         start_train_btn.setStyleSheet("background-color: #1a5c3a; color: #4dff9f;")
         start_train_btn.clicked.connect(self.start_training)
         btn_row.addWidget(start_train_btn)
         
-        stop_train_btn = QPushButton("■ Stop")
+        stop_train_btn = QPushButton("Stop")
         stop_train_btn.clicked.connect(self.stop_training)
         btn_row.addWidget(stop_train_btn)
         
@@ -774,7 +790,7 @@ class DevPanel(QWidget):
                     if 'mlx' in d.lower() or 'qwen' in d.lower():
                         self.model_list.addItem(os.path.join(root, d))
         
-        refresh_btn = QPushButton("🔄 Refresh Model List")
+        refresh_btn = QPushButton("Refresh Model List")
         refresh_btn.clicked.connect(self.refresh_models)
         d_layout.addWidget(refresh_btn)
         
@@ -797,7 +813,7 @@ class DevPanel(QWidget):
         layout.addWidget(manual_box)
         
         # Load Model
-        load_btn = QPushButton("🔄 Load Selected Model")
+        load_btn = QPushButton("Load Selected Model")
         load_btn.setStyleSheet("background-color: #1a3a5c; color: #4d9fff;")
         load_btn.clicked.connect(self.load_selected_model)
         layout.addWidget(load_btn)
@@ -871,7 +887,7 @@ class DevPanel(QWidget):
         bench_desc.setStyleSheet("color: #888; font-size: 12px;")
         b_layout.addWidget(bench_desc)
         
-        bench_btn = QPushButton("▶ Run AST Benchmark")
+        bench_btn = QPushButton("Run AST Benchmark")
         bench_btn.clicked.connect(self.run_ast_benchmark)
         b_layout.addWidget(bench_btn)
         
@@ -890,7 +906,7 @@ class DevPanel(QWidget):
         stress_desc.setStyleSheet("color: #888; font-size: 12px;")
         s_layout.addWidget(stress_desc)
         
-        stress_btn = QPushButton("▶ Start Stress Test")
+        stress_btn = QPushButton("Start Stress Test")
         stress_btn.clicked.connect(self.run_stress_test)
         s_layout.addWidget(stress_btn)
         
@@ -906,7 +922,7 @@ class DevPanel(QWidget):
         sm_desc = QLabel("Quick checks for prompts.json loading, theme switching, and core UI wiring.")
         sm_desc.setStyleSheet("color: #888; font-size: 12px;")
         sm_layout.addWidget(sm_desc)
-        smoke_btn = QPushButton("▶ Run Smoke Tests")
+        smoke_btn = QPushButton("Run Smoke Tests")
         smoke_btn.clicked.connect(self.run_smoke_tests)
         sm_layout.addWidget(smoke_btn)
         self.smoke_result = QLabel("No smoke tests run yet")
@@ -920,7 +936,7 @@ class DevPanel(QWidget):
         p_desc = QLabel("Measures generation throughput on the currently loaded model (small run).")
         p_desc.setStyleSheet("color: #888; font-size: 12px;")
         p_layout.addWidget(p_desc)
-        perf_btn = QPushButton("▶ Run Throughput Benchmark")
+        perf_btn = QPushButton("Run Throughput Benchmark")
         perf_btn.clicked.connect(self.run_throughput_benchmark)
         p_layout.addWidget(perf_btn)
         self.perf_result = QLabel("No benchmark run yet")
@@ -1068,7 +1084,7 @@ class DevPanel(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        warn_box = QGroupBox("⚠ Warning")
+        warn_box = QGroupBox("Warning")
         w_layout = QVBoxLayout()
 
         warn_text = QLabel(
@@ -1100,7 +1116,7 @@ class DevPanel(QWidget):
     def toggle_unrestricted(self, state):
         if state == Qt.Checked:
             self.unrestricted_enabled.setText("Unrestricted Mode ACTIVE")
-            self.unrestricted_status.setText("Status: ACTIVE ⚡")
+            self.unrestricted_status.setText("Status: ACTIVE")
             self.unrestricted_status.setStyleSheet("color: #ff4d6a; font-size: 18px; font-weight: bold; padding: 20px;")
             if self.main_app:
                 self.main_app.unrestricted_mode = True
@@ -1114,62 +1130,6 @@ class DevPanel(QWidget):
                 self.main_app.system_prompt = self.main_app.original_system_prompt
 
 
-class MiniSparkline(QWidget):
-    def __init__(self, range_min: float = 0.0, range_max: float = 100.0, parent=None):
-        super().__init__(parent)
-        self._values = deque(maxlen=60)
-        self._range_min = range_min
-        self._range_max = range_max
-        self._available = True
-        self.setFixedHeight(26)
-
-    def set_available(self, available: bool) -> None:
-        self._available = available
-        self.update()
-
-    def add_point(self, value):
-        self._values.append(value)
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-
-        w = self.width()
-        h = self.height()
-
-        pen_bg = QPen(QColor(255, 255, 255, 30), 1)
-        painter.setPen(pen_bg)
-        painter.drawRoundedRect(0, 0, w - 1, h - 1, 6, 6)
-
-        if not self._available:
-            painter.setPen(QPen(QColor(140, 140, 140, 180), 1))
-            painter.drawText(self.rect(), Qt.AlignCenter, "N/A")
-            return
-
-        vals = [v for v in self._values if isinstance(v, (int, float))]
-        if len(vals) < 2:
-            painter.setPen(QPen(QColor(140, 140, 140, 120), 1))
-            painter.drawLine(6, h // 2, w - 6, h // 2)
-            return
-
-        rmin = self._range_min
-        rmax = self._range_max
-        if rmax <= rmin:
-            rmax = rmin + 1.0
-
-        step_x = (w - 12) / max(1, (len(vals) - 1))
-        points = []
-        for i, v in enumerate(vals):
-            nv = max(rmin, min(rmax, float(v)))
-            t = (nv - rmin) / (rmax - rmin)
-            x = 6 + i * step_x
-            y = 4 + (1.0 - t) * (h - 8)
-            points.append((x, y))
-
-        painter.setPen(QPen(QColor(124, 77, 255, 220), 2))
-        for i in range(1, len(points)):
-            painter.drawLine(int(points[i - 1][0]), int(points[i - 1][1]), int(points[i][0]), int(points[i][1]))
 
 # ---------------------------------------------------------
 # MAIN UI
@@ -1204,6 +1164,13 @@ class ChatbotGUI(QWidget):
         # Chat Sessions Storage Mock
         self.chats = {"Default Chat": [{"role": "system", "content": self.system_prompt}]}
         self.active_chat = "Default Chat"
+        self.chat_ui = {"Default Chat": []}
+        self._pending_chat = None
+        self._pending_msg_index = None
+        self._stream_in_think = False
+        self._stream_buffer = ""
+        self._thinking_start_ts = None
+        self._answer_started = False
 
         self.init_ui()
 
@@ -1336,9 +1303,6 @@ class ChatbotGUI(QWidget):
         self.lbl_sys_ram_pct = QLabel("0.0%")
         sys_ram_row.addWidget(self.lbl_sys_ram_pct)
         hw_layout.addLayout(sys_ram_row)
-
-        self.ram_chart = MiniSparkline(0.0, 100.0)
-        hw_layout.addWidget(self.ram_chart)
         
         sys_row = QHBoxLayout()
         sys_row.addWidget(QLabel("CPU"))
@@ -1347,29 +1311,22 @@ class ChatbotGUI(QWidget):
         sys_row.addWidget(self.lbl_cpu_pct)
         hw_layout.addLayout(sys_row)
 
-        self.cpu_chart = MiniSparkline(0.0, 100.0)
-        hw_layout.addWidget(self.cpu_chart)
-
         gpu_row = QHBoxLayout()
-        gpu_row.addWidget(QLabel("GPU (Apple)"))
+        gpu_row.addWidget(QLabel("GPU"))
         gpu_row.addStretch()
         self.lbl_gpu_pct = QLabel("N/A")
         gpu_row.addWidget(self.lbl_gpu_pct)
         hw_layout.addLayout(gpu_row)
-
-        self.gpu_chart = MiniSparkline(0.0, 100.0)
-        self.gpu_chart.set_available(False)
-        hw_layout.addWidget(self.gpu_chart)
         
         s_layout.addWidget(self.hw_box)
         s_layout.addSpacing(10)
         
-        settings_btn = QPushButton("⚙ Settings")
+        settings_btn = QPushButton("Settings")
         settings_btn.setObjectName("SettingsButton")
         settings_btn.clicked.connect(self.open_settings)
         s_layout.addWidget(settings_btn)
         
-        dev_btn = QPushButton("🔧 Dev Mode")
+        dev_btn = QPushButton("Dev Mode")
         dev_btn.setObjectName("DevUnlockButton")
         dev_btn.clicked.connect(self.open_dev_panel)
         s_layout.addWidget(dev_btn)
@@ -1389,6 +1346,7 @@ class ChatbotGUI(QWidget):
 
         h_layout.addSpacing(20)
         self.service_status_lbl = QLabel("Service: starting…")
+        self.service_status_lbl.setObjectName("ServiceStatus")
         h_layout.addWidget(self.service_status_lbl)
         h_layout.addStretch()
 
@@ -1404,9 +1362,19 @@ class ChatbotGUI(QWidget):
         
         m_layout.addWidget(self.header_area)
         
-        self.chat_display = QTextEdit()
+        self.chat_display = QTextBrowser()
+        self.chat_display.setOpenLinks(False)
+        self.chat_display.anchorClicked.connect(self.on_chat_anchor_clicked)
         self.chat_display.setReadOnly(True)
         m_layout.addWidget(self.chat_display)
+
+        self.chat_menu_btn = QToolButton(self.chat_display.viewport())
+        self.chat_menu_btn.setText("⋯")
+        self.chat_menu_btn.setFixedSize(28, 28)
+        self.chat_menu_btn.setVisible(False)
+        self.chat_menu_btn.clicked.connect(self.open_chat_menu)
+        self.chat_display.verticalScrollBar().valueChanged.connect(self._on_chat_scroll_changed)
+        self._position_chat_menu_btn()
         
         # Input Area Wrapper
         self.input_container = QFrame()
@@ -1430,10 +1398,10 @@ class ChatbotGUI(QWidget):
         tool_layout = QHBoxLayout()
         tool_layout.setSpacing(8)
         
-        btn_rag = QPushButton("📂 Files")
+        btn_rag = QPushButton("Files")
         btn_rag.clicked.connect(lambda: QMessageBox.information(self, "RAG", "Index your files for context!"))
         
-        btn_code = QPushButton("⚡ Run")
+        btn_code = QPushButton("Run")
         btn_code.clicked.connect(self.run_last_code)
 
         tool_layout.addWidget(btn_rag)
@@ -1458,7 +1426,7 @@ class ChatbotGUI(QWidget):
         # ---------------- RIGHT DEV SIDEBAR (HIDDEN BY DEFAULT) ----------------
         self.dev_sidebar = QFrame()
         self.dev_sidebar.setObjectName("DevSidebar")
-        self.dev_sidebar.setFixedWidth(420)
+        self.dev_sidebar.setFixedWidth(340)
         self.dev_sidebar.setVisible(False)
         dev_layout = QVBoxLayout(self.dev_sidebar)
         dev_layout.setContentsMargins(10, 10, 10, 10)
@@ -1520,10 +1488,18 @@ class ChatbotGUI(QWidget):
                 color: {colors['text']};
                 font-family: "Helvetica Neue", Arial, sans-serif;
             }}
+            QLabel {{
+                background: transparent;
+            }}
             QLabel#Logo {{
                 font-size: 22px;
                 font-weight: 800;
                 color: {colors['accent']};
+            }}
+            QLabel#ServiceStatus {{
+                font-size: 13px;
+                font-weight: 600;
+                color: {colors['muted']};
             }}
             QLabel#DevHeader {{
                 font-size: 16px;
@@ -1700,31 +1676,20 @@ class ChatbotGUI(QWidget):
         self.rag_badge.setObjectName("RagBadge")
 
     def update_hw_stats(self, app_ram_gb: str, sys_ram_percent: str, cpu_percent: str, gpu_percent: str):
-        self.lbl_ram_raw.setText(app_ram_gb)
+        shown = app_ram_gb
+        try:
+            rss_gb = float(str(app_ram_gb).split()[0])
+        except Exception:
+            rss_gb = None
+
+        peak = getattr(self, "_model_peak_memory_gb", None)
+        if isinstance(peak, (int, float)) and peak > 0 and isinstance(rss_gb, (int, float)):
+            shown = f"{max(rss_gb, float(peak)):.2f} GB"
+
+        self.lbl_ram_raw.setText(shown)
         self.lbl_sys_ram_pct.setText(sys_ram_percent)
         self.lbl_cpu_pct.setText(cpu_percent)
         self.lbl_gpu_pct.setText(gpu_percent)
-
-        def parse_percent(s: str):
-            try:
-                return float(s.strip().replace("%", ""))
-            except Exception:
-                return None
-
-        ram_v = parse_percent(sys_ram_percent)
-        cpu_v = parse_percent(cpu_percent)
-        gpu_v = parse_percent(gpu_percent) if gpu_percent != "N/A" else None
-
-        if ram_v is not None:
-            self.ram_chart.add_point(ram_v)
-        if cpu_v is not None:
-            self.cpu_chart.add_point(cpu_v)
-
-        if gpu_v is None:
-            self.gpu_chart.set_available(False)
-        else:
-            self.gpu_chart.set_available(True)
-            self.gpu_chart.add_point(gpu_v)
 
     def _set_chat_enabled(self, enabled: bool) -> None:
         self.input_field.setEnabled(enabled)
@@ -1835,28 +1800,221 @@ class ChatbotGUI(QWidget):
 
         self.dev_sidebar.setVisible(self.dev_sidebar_shown)
         if self.dev_sidebar_shown:
-            self.splitter.setSizes([260, 700, 420])
+            self.splitter.setSizes([260, 760, 340])
         else:
             self.splitter.setSizes([260, 840, 0])
 
     def new_chat(self):
-        title, ok = QInputDialog.getText(self, "New Chat", "Chat Name:")
-        if ok and title:
-            self.chats[title] = [{"role": "system", "content": self.system_prompt}]
-            self.chat_list.addItem(title)
-            self.chat_list.setCurrentRow(self.chat_list.count()-1)
-            self.switch_chat(self.chat_list.currentItem())
+        base = "New Chat"
+        idx = 1
+        title = base
+        while title in self.chats:
+            idx += 1
+            title = f"{base} {idx}"
+
+        self.chats[title] = [{"role": "system", "content": self.system_prompt}]
+        self.chat_ui[title] = []
+        self.chat_list.addItem(title)
+        self.chat_list.setCurrentRow(self.chat_list.count() - 1)
+        self.switch_chat(self.chat_list.currentItem())
 
     def switch_chat(self, item):
         self.active_chat = item.text()
-        self.chat_display.clear()
-        
-        # Redraw history visually
-        for msg in self.chats[self.active_chat]:
-            if msg["role"] == "user":
-                self.add_chat_bubble("You", msg["content"], is_user=True)
-            elif msg["role"] == "assistant":
-                self.add_chat_bubble("FoxAI", msg["content"], is_user=False)
+        if self.active_chat not in self.chat_ui or not self.chat_ui[self.active_chat]:
+            self.chat_ui.setdefault(self.active_chat, [])
+            for msg in self.chats.get(self.active_chat, []):
+                if msg.get("role") in ("user", "assistant"):
+                    if msg["role"] == "user":
+                        self.chat_ui[self.active_chat].append({"role": "user", "content": msg.get("content", "")})
+                    else:
+                        self.chat_ui[self.active_chat].append({"role": "assistant", "answer": msg.get("content", ""), "think": "", "thought_s": None, "think_collapsed": True, "meta": None})
+
+        self.render_chat(self.active_chat)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_chat_menu_btn()
+
+    def _position_chat_menu_btn(self):
+        if not hasattr(self, "chat_menu_btn") or self.chat_menu_btn is None:
+            return
+        vp = self.chat_display.viewport()
+        x = vp.width() - self.chat_menu_btn.width() - 12
+        y = 12
+        self.chat_menu_btn.move(max(0, x), max(0, y))
+
+    def _on_chat_scroll_changed(self, value: int):
+        if not hasattr(self, "chat_menu_btn"):
+            return
+        at_top = value <= 2
+        self.chat_menu_btn.setVisible(at_top)
+        if at_top:
+            self._position_chat_menu_btn()
+
+    def open_chat_menu(self):
+        menu = QMenu(self)
+        change_name = QAction("Change name", self)
+        delete_chat = QAction("Delete chat", self)
+        history = QAction("Get chat history", self)
+
+        change_name.triggered.connect(self._menu_change_chat_name)
+        delete_chat.triggered.connect(self._menu_delete_chat)
+        history.triggered.connect(self._menu_show_history)
+
+        menu.addAction(change_name)
+        menu.addAction(delete_chat)
+        menu.addAction(history)
+
+        pos = self.chat_menu_btn.mapToGlobal(self.chat_menu_btn.rect().bottomRight())
+        menu.exec_(pos)
+
+    def _menu_change_chat_name(self):
+        new_name, ok = QInputDialog.getText(self, "Change Chat Name", "New name:", text=self.active_chat)
+        if not ok or not new_name.strip():
+            return
+        self._rename_chat(self.active_chat, new_name.strip())
+
+    def _menu_delete_chat(self):
+        if self.active_chat == "Default Chat":
+            QMessageBox.warning(self, "Delete Chat", "Default Chat cannot be deleted.")
+            return
+        res = QMessageBox.question(self, "Delete Chat", f"Delete '{self.active_chat}'? This cannot be undone.", QMessageBox.Yes | QMessageBox.No)
+        if res != QMessageBox.Yes:
+            return
+        old = self.active_chat
+        row = self.chat_list.currentRow()
+        self.chat_list.takeItem(row)
+        self.chats.pop(old, None)
+        self.chat_ui.pop(old, None)
+        self.active_chat = "Default Chat"
+        items = self.chat_list.findItems("Default Chat", Qt.MatchExactly)
+        if items:
+            self.chat_list.setCurrentItem(items[0])
+            self.switch_chat(items[0])
+
+    def _menu_show_history(self):
+        data = {
+            "name": self.active_chat,
+            "messages": self.chats.get(self.active_chat, []),
+        }
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Chat History")
+        dlg.setFixedSize(720, 520)
+        layout = QVBoxLayout(dlg)
+        editor = QPlainTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlainText(json.dumps(data, indent=2, ensure_ascii=False))
+        layout.addWidget(editor)
+        btn_row = QHBoxLayout()
+        copy_btn = QPushButton("Copy")
+        close_btn = QPushButton("Close")
+        btn_row.addStretch()
+        btn_row.addWidget(copy_btn)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(editor.toPlainText()))
+        close_btn.clicked.connect(dlg.accept)
+        dlg.exec_()
+
+    def _rename_chat(self, old_name: str, new_name: str):
+        if new_name in self.chats and new_name != old_name:
+            QMessageBox.warning(self, "Name Exists", "A chat with this name already exists.")
+            return
+        if old_name not in self.chats:
+            return
+        self.chats[new_name] = self.chats.pop(old_name)
+        self.chat_ui[new_name] = self.chat_ui.pop(old_name, [])
+        for i in range(self.chat_list.count()):
+            it = self.chat_list.item(i)
+            if it.text() == old_name:
+                it.setText(new_name)
+                break
+        self.active_chat = new_name
+        self.render_chat(self.active_chat)
+
+    def _is_placeholder_chat_name(self, name: str) -> bool:
+        return name == "New Chat" or name.startswith("New Chat ")
+
+    def _auto_name_active_chat(self, first_message: str):
+        base = " ".join((first_message or "").strip().split()[:6]).strip()
+        base = "".join(ch for ch in base if ch.isalnum() or ch.isspace() or ch in "-_").strip()
+        if not base:
+            base = "Chat"
+        base = base[:28].strip()
+        new_name = base
+        idx = 2
+        while new_name in self.chats and new_name != self.active_chat:
+            new_name = f"{base} ({idx})"
+            idx += 1
+        self._rename_chat(self.active_chat, new_name)
+
+    def on_chat_anchor_clicked(self, url):
+        s = url.toString()
+        if not s.startswith("toggle_think:"):
+            return
+        try:
+            idx = int(s.split(":", 1)[1])
+        except Exception:
+            return
+        msgs = self.chat_ui.get(self.active_chat, [])
+        if 0 <= idx < len(msgs) and msgs[idx].get("role") == "assistant":
+            msgs[idx]["think_collapsed"] = not msgs[idx].get("think_collapsed", True)
+            self.render_chat(self.active_chat)
+
+    def render_chat(self, chat_name: str):
+        msgs = self.chat_ui.get(chat_name, [])
+        parts = []
+        for i, m in enumerate(msgs):
+            role = m.get("role")
+            if role == "user":
+                txt = self._html_escape(m.get("content", "")).replace("\n", "<br>")
+                parts.append(
+                    "<div style='margin: 10px 0 18px 0;'>"
+                    "<div style='color:#888;font-weight:700;font-size:12px;margin-bottom:6px;'>YOU</div>"
+                    f"<div style='font-size:16px;line-height:1.6'>{txt}</div>"
+                    "</div>"
+                )
+            elif role == "assistant":
+                answer = m.get("answer", m.get("content", ""))
+                think = m.get("think", "")
+                thought_s = m.get("thought_s")
+                collapsed = m.get("think_collapsed", True)
+                answer_html = self._html_escape(answer).replace("\n", "<br>")
+                block = ["<div style='margin: 10px 0 26px 0;'>", "<div style='color:#7c4dff;font-weight:800;font-size:12px;margin-bottom:8px;'>FoxAI</div>"]
+
+                if think:
+                    arrow = "▸" if collapsed else "▾"
+                    t = f"{float(thought_s):.2f}" if isinstance(thought_s, (int, float)) else "0.00"
+                    block.append(
+                        "<div style='margin: 6px 0 10px 0;'>"
+                        f"<a style='color:#777;text-decoration:none;font-size:12px;' href='toggle_think:{i}'>{arrow}</a>"
+                        f"<span style='color:#777;font-size:12px;margin-left:8px;'>Thought for {t} seconds</span>"
+                        "</div>"
+                    )
+                    if not collapsed:
+                        think_html = self._html_escape(think).replace("\n", "<br>")
+                        block.append(
+                            "<div style='background:#222;border:1px solid #2a2a2a;border-radius:12px;padding:14px 16px;margin-bottom:14px;'>"
+                            f"<div style='color:#bbb;font-size:13px;line-height:1.6'>{think_html}</div>"
+                            "</div>"
+                        )
+                else:
+                    if isinstance(thought_s, (int, float)):
+                        block.append(f"<div style='color:#777;font-size:12px;margin: 6px 0 10px 0;'>Thought for {float(thought_s):.2f} seconds</div>")
+
+                block.append(f"<div style='font-size:18px;line-height:1.7'>{answer_html}</div>")
+
+                meta = m.get("meta")
+                if isinstance(meta, dict):
+                    block.append(
+                        "<div style='color:#666;font-size:11px;margin-top:12px;'>"
+                        f"{meta.get('tps', 0.0):.2f} tokens/sec | {meta.get('tokens', 0)} tokens | {meta.get('elapsed', 0.0):.2f}s elapsed"
+                        "</div>"
+                    )
+                block.append("</div>")
+                parts.append("".join(block))
+
+        self.chat_display.setHtml("<div style='padding:24px;'>" + "".join(parts) + "</div>")
         self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
 
     def soru_sor(self):
@@ -1905,10 +2063,13 @@ class ChatbotGUI(QWidget):
 
         self.input_field.setDisabled(True)
         self.send_btn.setDisabled(True)
-        self.gen_status_lbl.setText("Generating…")
+        self.gen_status_lbl.setText("Thinking…")
         
         # Prepare for assistant response
-        self.current_assistant_bubble = self.add_chat_bubble("FoxAI", "", is_user=False)
+        self._thinking_start_ts = time.time()
+        self._answer_started = False
+        self._stream_in_think = False
+        self._stream_buffer = ""
         
         self.worker = AIWorker(self.model, self.tokenizer, prompt_string)
         self.worker.new_token.connect(self.on_new_token)
@@ -1971,24 +2132,131 @@ class ChatbotGUI(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Execution Error", str(e))
 
+    def _html_escape(self, s: str) -> str:
+        return (
+            (s or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+    def _split_stream_delta(self, piece: str) -> tuple[str, str]:
+        buf = (self._stream_buffer or "") + (piece or "")
+        think_out = ""
+        answer_out = ""
+
+        start_tags = ["<think>", "<analysis>", "<thinking>"]
+        end_tags = ["</think>", "</analysis>", "</thinking>"]
+        max_tag_len = max(len(t) for t in (start_tags + end_tags))
+        hold_len = max_tag_len - 1
+
+        def match_any(tags, idx):
+            for t in tags:
+                if buf.startswith(t, idx):
+                    return t
+            return None
+
+        i = 0
+        while i < len(buf):
+            if not self._stream_in_think:
+                next_start = min((buf.find(t, i) for t in start_tags if buf.find(t, i) != -1), default=-1)
+                next_end = min((buf.find(t, i) for t in end_tags if buf.find(t, i) != -1), default=-1)
+
+                if next_start == -1 and next_end == -1:
+                    break
+
+                if next_end != -1 and (next_start == -1 or next_end < next_start):
+                    answer_out += buf[i:next_end]
+                    matched = match_any(end_tags, next_end)
+                    i = next_end + (len(matched) if matched else 0)
+                    continue
+
+                answer_out += buf[i:next_start]
+                matched = match_any(start_tags, next_start)
+                i = next_start + (len(matched) if matched else 0)
+                self._stream_in_think = True
+            else:
+                next_end = min((buf.find(t, i) for t in end_tags if buf.find(t, i) != -1), default=-1)
+                if next_end == -1:
+                    think_out += buf[i:]
+                    i = len(buf)
+                    break
+                think_out += buf[i:next_end]
+                matched = match_any(end_tags, next_end)
+                i = next_end + (len(matched) if matched else 0)
+                self._stream_in_think = False
+
+        tail = buf[i:]
+        if not self._stream_in_think:
+            last_lt = tail.rfind("<")
+            if last_lt != -1 and len(tail) - last_lt <= hold_len:
+                answer_out += tail[:last_lt]
+                self._stream_buffer = tail[last_lt:]
+            else:
+                answer_out += tail
+                self._stream_buffer = ""
+        else:
+            keep = tail[-hold_len:] if len(tail) > hold_len else tail
+            think_out += tail[:-hold_len] if len(tail) > hold_len else ""
+            self._stream_buffer = keep
+
+        return think_out, answer_out
+
+    def _finalize_stream_tail(self) -> tuple[str, str]:
+        if self._stream_in_think:
+            self._stream_buffer = ""
+            return "", ""
+        tail = self._stream_buffer or ""
+        self._stream_buffer = ""
+        return "", tail
+
     def on_new_token(self, token):
-        # Move cursor to end and insert token
-        self.chat_display.moveCursor(QTextCursor.End)
-        self.chat_display.insertPlainText(token)
+        think_delta, answer_delta = self._split_stream_delta(token)
+
+        if self._pending_chat is not None and self._pending_msg_index is not None:
+            msg = self.chat_ui[self._pending_chat][self._pending_msg_index]
+            msg["think"] += think_delta
+            msg["answer"] += answer_delta
+
+        if not answer_delta:
+            return
+
+        if not self._answer_started:
+            thought_s = max(0.0, time.time() - getattr(self, "_thinking_start_ts", time.time()))
+            if self._pending_chat is not None and self._pending_msg_index is not None:
+                self.chat_ui[self._pending_chat][self._pending_msg_index]["thought_s"] = float(thought_s)
+
+            self.chat_display.append(f"<div style='color: #777; font-size: 12px; margin: 8px 0px 14px 0px;'>▾ Thought for {thought_s:.2f} seconds</div>")
+            self._answer_started = True
+            self.gen_status_lbl.setText("")
+
+            fmt = QTextCharFormat()
+            fmt.setForeground(self.palette().color(QPalette.Text))
+            self.chat_display.setCurrentCharFormat(fmt)
+
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertText(answer_delta)
         self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
 
-    def on_ai_success(self, response, tps, tokens, ms):
+    def on_ai_success(self, response, tps, tokens, ms, peak_memory_gb):
         self.chats[self.active_chat].append({"role": "assistant", "content": response})
+        if isinstance(peak_memory_gb, (int, float)) and peak_memory_gb > 0:
+            self._model_peak_memory_gb = float(peak_memory_gb)
+
+        _, tail = self._finalize_stream_tail()
+        if tail and self._pending_chat is not None and self._pending_msg_index is not None:
+            self.chat_ui[self._pending_chat][self._pending_msg_index]["answer"] += tail
         
         # Display metadata
-        meta_html = f"""
-        <div style='background-color: #1a1a1a; color: #555; font-size: 11px; padding: 8px; border-radius: 6px; margin-top: 10px; border: 1px solid #222;'>
-            <span><b>{tps:.2f}</b> tokens/sec</span> | 
-            <span><b>{tokens}</b> tokens</span> | 
-            <span><b>{ms:.2f}s</b> elapsed</span>
-        </div><br>
-        """
-        self.chat_display.append(meta_html)
+        if self._pending_chat is not None and self._pending_msg_index is not None:
+            msg = self.chat_ui[self._pending_chat][self._pending_msg_index]
+            msg["meta"] = {"tps": float(tps), "tokens": int(tokens), "elapsed": float(ms)}
+
+        self._pending_chat = None
+        self._pending_msg_index = None
+
+        self.render_chat(self.active_chat)
         self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
         
         self.input_field.setDisabled(False)
