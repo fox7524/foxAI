@@ -76,7 +76,7 @@ from PyQt5.QtWidgets import (
     QGridLayout, QPlainTextEdit, QDoubleSpinBox, QToolButton, QMenu, QAction,
     QListWidgetItem
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QSettings
 from PyQt5.QtGui import QFont, QTextCursor, QPalette, QColor, QTextCharFormat, QCursor
 
 # mlx_lm: Apple's MLX framework for local LLM inference
@@ -112,9 +112,13 @@ class ModelLoaderWorker(QThread):
     def run(self):
         try:
             try:
-                model, tokenizer = load(self.model_path, tokenizer_config={"fix_mistral_regex": True})
+                model, tokenizer = load(
+                    self.model_path,
+                    tokenizer_config={"fix_mistral_regex": True},
+                    lazy=True,
+                )
             except TypeError:
-                model, tokenizer = load(self.model_path)
+                model, tokenizer = load(self.model_path, lazy=True)
             self._ensure_special_tokens(tokenizer)
             self.loaded.emit(model, tokenizer, self.model_path)
         except Exception as e:
@@ -539,7 +543,61 @@ class DevPanel(QWidget):
 
     def _hide_dev_sidebar(self):
         if self.main_app:
-            self.main_app.toggle_dev_sidebar(force_state=False)
+            self.main_app.toggle_dev_dialog(force_state=False)
+
+
+class DevPanelDialog(QDialog):
+    def __init__(self, parent=None, main_app=None):
+        super().__init__(parent)
+        self.main_app = main_app
+        self.setWindowTitle("Developer")
+        self.setWindowFlags(self.windowFlags() | Qt.Tool)
+        self.setFixedSize(400, 300)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        header = QHBoxLayout()
+        self.collapse_btn = QToolButton()
+        self.collapse_btn.setText("▾")
+        self.collapse_btn.setFixedSize(28, 28)
+        self.collapse_btn.clicked.connect(self.toggle_collapsed)
+        header.addWidget(self.collapse_btn)
+
+        title = QLabel("Developer")
+        title.setObjectName("DevHeader")
+        header.addWidget(title)
+        header.addStretch()
+
+        close_btn = QToolButton()
+        close_btn.setText("✕")
+        close_btn.setFixedSize(28, 28)
+        close_btn.clicked.connect(self.hide)
+        header.addWidget(close_btn)
+        root.addLayout(header)
+
+        self.panel = DevPanel(self, main_app=main_app)
+        root.addWidget(self.panel)
+
+        self._collapsed = False
+        self._expanded_size = QSize(400, 300)
+
+    def toggle_collapsed(self):
+        self.set_collapsed(not self._collapsed)
+        if self.main_app:
+            self.main_app._save_dev_dialog_state()
+
+    def set_collapsed(self, collapsed: bool):
+        self._collapsed = bool(collapsed)
+        if self._collapsed:
+            self.collapse_btn.setText("▸")
+            self.panel.setVisible(False)
+            self.setFixedHeight(54)
+        else:
+            self.collapse_btn.setText("▾")
+            self.panel.setVisible(True)
+            self.setFixedSize(self._expanded_size)
     
     def build_rag_tab(self):
         widget = QWidget()
@@ -621,7 +679,7 @@ class DevPanel(QWidget):
         self.rag_status_lbl.setText("Indexing...")
         QApplication.processEvents()
 
-        if self.main_app and self.main_app.rag_engine:
+        if self.main_app and self.main_app.get_rag_engine():
             ok = False
             try:
                 ok = self.main_app.rag_engine.ingest_folder(folder, recursive=True)
@@ -655,7 +713,7 @@ class DevPanel(QWidget):
         QMessageBox.information(self, "Python Docs", "Python documentation indexing would download and chunk the official Python docs.\n\nThis feature requires the docs URL or a pre-downloaded docs folder.")
     
     def reset_rag(self):
-        if self.main_app and self.main_app.rag_engine:
+        if self.main_app and self.main_app.get_rag_engine():
             self.main_app.rag_engine.reset_database()
             self.rag_status_lbl.setText("Disabled")
             self.rag_chunks_lbl.setText("0 chunks indexed")
@@ -1144,12 +1202,11 @@ class ChatbotGUI(QWidget):
         self.unrestricted_mode = False
         self.dev_mode_active = False
         self.dev_sidebar_shown = False
+        self.dev_dialog = None
+        self._settings = QSettings("FoxAI", "FoxAIStudio")
         
-        # Engines
-        try:
-            self.rag_engine = RAGEngine()
-        except:
-            self.rag_engine = None
+        # Engines (lazy-init to avoid loading embedding models unless needed)
+        self.rag_engine = None
 
         # Load prompts from JSON configuration file
         # system_prompt: Only editable in Dev Mode (safety feature)
@@ -1181,6 +1238,46 @@ class ChatbotGUI(QWidget):
         self.mem_thread.start()
 
         self.start_ai_service()
+        self._restore_dev_dialog_state()
+
+    def _restore_dev_dialog_state(self):
+        visible = self._settings.value("dev_dialog/visible", False, type=bool)
+        collapsed = self._settings.value("dev_dialog/collapsed", False, type=bool)
+        geom = self._settings.value("dev_dialog/geometry")
+
+        if self.dev_mode_active and visible:
+            self._ensure_dev_dialog()
+            if geom:
+                try:
+                    self.dev_dialog.restoreGeometry(geom)
+                except Exception:
+                    pass
+            self.dev_dialog.set_collapsed(collapsed)
+            self.dev_dialog.show()
+
+    def _save_dev_dialog_state(self):
+        if not self.dev_dialog:
+            self._settings.setValue("dev_dialog/visible", False)
+            return
+        self._settings.setValue("dev_dialog/visible", self.dev_dialog.isVisible())
+        self._settings.setValue("dev_dialog/collapsed", getattr(self.dev_dialog, "_collapsed", False))
+        try:
+            self._settings.setValue("dev_dialog/geometry", self.dev_dialog.saveGeometry())
+        except Exception:
+            pass
+
+    def _ensure_dev_dialog(self):
+        if self.dev_dialog is None:
+            self.dev_dialog = DevPanelDialog(self, main_app=self)
+
+    def get_rag_engine(self):
+        if self.rag_engine is not None:
+            return self.rag_engine
+        try:
+            self.rag_engine = RAGEngine()
+        except Exception:
+            self.rag_engine = None
+        return self.rag_engine
 
     def load_prompts(self) -> dict:
         """
@@ -1353,7 +1450,7 @@ class ChatbotGUI(QWidget):
         self.dev_toggle_btn = QPushButton("Dev")
         self.dev_toggle_btn.setFixedSize(54, 28)
         self.dev_toggle_btn.setVisible(False)
-        self.dev_toggle_btn.clicked.connect(self.toggle_dev_sidebar)
+        self.dev_toggle_btn.clicked.connect(self.toggle_dev_dialog)
         h_layout.addWidget(self.dev_toggle_btn)
         
         self.rag_badge = QLabel("RAG: OFF")
@@ -1371,13 +1468,7 @@ class ChatbotGUI(QWidget):
         self.chat_list.itemSelectionChanged.connect(self._on_chat_list_selection_changed)
         self._rebuild_chat_list()
 
-        self.chat_menu_btn = QToolButton(self.chat_display.viewport())
-        self.chat_menu_btn.setText("⋯")
-        self.chat_menu_btn.setFixedSize(28, 28)
-        self.chat_menu_btn.setVisible(False)
-        self.chat_menu_btn.clicked.connect(self.open_chat_menu)
-        self.chat_display.verticalScrollBar().valueChanged.connect(self._on_chat_scroll_changed)
-        self._position_chat_menu_btn()
+        self.chat_menu_btn = None
         
         # Input Area Wrapper
         self.input_container = QFrame()
@@ -1434,23 +1525,12 @@ class ChatbotGUI(QWidget):
         ic_layout.addWidget(self.input_box)
         m_layout.addWidget(self.input_container)
 
-        # ---------------- RIGHT DEV SIDEBAR (HIDDEN BY DEFAULT) ----------------
-        self.dev_sidebar = QFrame()
-        self.dev_sidebar.setObjectName("DevSidebar")
-        self.dev_sidebar.setFixedWidth(340)
-        self.dev_sidebar.setVisible(False)
-        dev_layout = QVBoxLayout(self.dev_sidebar)
-        dev_layout.setContentsMargins(10, 10, 10, 10)
-        self.dev_panel = DevPanel(self.dev_sidebar, main_app=self)
-        dev_layout.addWidget(self.dev_panel)
-
         # Assemble
         splitter = QSplitter(Qt.Horizontal)
         self.splitter = splitter
         splitter.addWidget(self.sidebar)
         splitter.addWidget(self.main_area)
-        splitter.addWidget(self.dev_sidebar)
-        splitter.setSizes([260, 840, 0])
+        splitter.setSizes([260, 840])
         main_layout.addWidget(splitter)
 
         self.apply_theme(self.prompts.get("theme", "dark"))
@@ -1939,28 +2019,22 @@ class ChatbotGUI(QWidget):
             if not dev_mode_gate.attempt_unlock(password):
                 QMessageBox.critical(self, "Access Denied", "Incorrect password for Dev Mode.")
                 return
-            QMessageBox.information(self, "Dev Mode", "Dev Mode unlocked successfully!")
 
         self.dev_mode_active = True
         self.dev_toggle_btn.setVisible(True)
-        self.toggle_dev_sidebar(force_state=True)
+        self.toggle_dev_dialog(force_state=True)
 
-    def toggle_dev_sidebar(self, force_state=None) -> None:
+    def toggle_dev_dialog(self, force_state=None) -> None:
         if not self.dev_mode_active:
             return
-
+        self._ensure_dev_dialog()
         if force_state is True:
-            self.dev_sidebar_shown = True
+            self.dev_dialog.show()
         elif force_state is False:
-            self.dev_sidebar_shown = False
+            self.dev_dialog.hide()
         else:
-            self.dev_sidebar_shown = not self.dev_sidebar_shown
-
-        self.dev_sidebar.setVisible(self.dev_sidebar_shown)
-        if self.dev_sidebar_shown:
-            self.splitter.setSizes([260, 760, 340])
-        else:
-            self.splitter.setSizes([260, 840, 0])
+            self.dev_dialog.setVisible(not self.dev_dialog.isVisible())
+        self._save_dev_dialog_state()
 
     def new_chat(self):
         base = "New Chat"
@@ -1988,94 +2062,13 @@ class ChatbotGUI(QWidget):
                     if msg["role"] == "user":
                         self.chat_ui[self.active_chat].append({"role": "user", "content": msg.get("content", "")})
                     else:
-                        self.chat_ui[self.active_chat].append({"role": "assistant", "answer": msg.get("content", ""), "think": "", "thought_s": None, "think_collapsed": True, "meta": None})
+                        self.chat_ui[self.active_chat].append({"role": "assistant", "answer": msg.get("content", ""), "thought_s": None, "meta": None})
 
         self.render_chat(self.active_chat)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._position_chat_menu_btn()
-
-    def _position_chat_menu_btn(self):
-        if not hasattr(self, "chat_menu_btn") or self.chat_menu_btn is None:
-            return
-        vp = self.chat_display.viewport()
-        x = vp.width() - self.chat_menu_btn.width() - 12
-        y = 12
-        self.chat_menu_btn.move(max(0, x), max(0, y))
-
-    def _on_chat_scroll_changed(self, value: int):
-        if not hasattr(self, "chat_menu_btn"):
-            return
-        at_top = value <= 2
-        self.chat_menu_btn.setVisible(at_top)
-        if at_top:
-            self._position_chat_menu_btn()
-
-    def open_chat_menu(self):
-        menu = QMenu(self)
-        change_name = QAction("Change name", self)
-        delete_chat = QAction("Delete chat", self)
-        history = QAction("Get chat history", self)
-
-        change_name.triggered.connect(self._menu_change_chat_name)
-        delete_chat.triggered.connect(self._menu_delete_chat)
-        history.triggered.connect(self._menu_show_history)
-
-        menu.addAction(change_name)
-        menu.addAction(delete_chat)
-        menu.addAction(history)
-
-        pos = self.chat_menu_btn.mapToGlobal(self.chat_menu_btn.rect().bottomRight())
-        menu.exec_(pos)
-
-    def _menu_change_chat_name(self):
-        new_name, ok = QInputDialog.getText(self, "Change Chat Name", "New name:", text=self.active_chat)
-        if not ok or not new_name.strip():
-            return
-        self._rename_chat(self.active_chat, new_name.strip())
-
-    def _menu_delete_chat(self):
-        if self.active_chat == "Default Chat":
-            QMessageBox.warning(self, "Delete Chat", "Default Chat cannot be deleted.")
-            return
-        res = QMessageBox.question(self, "Delete Chat", f"Delete '{self.active_chat}'? This cannot be undone.", QMessageBox.Yes | QMessageBox.No)
-        if res != QMessageBox.Yes:
-            return
-        old = self.active_chat
-        row = self.chat_list.currentRow()
-        self.chat_list.takeItem(row)
-        self.chats.pop(old, None)
-        self.chat_ui.pop(old, None)
-        self.active_chat = "Default Chat"
-        items = self.chat_list.findItems("Default Chat", Qt.MatchExactly)
-        if items:
-            self.chat_list.setCurrentItem(items[0])
-            self.switch_chat(items[0])
-
-    def _menu_show_history(self):
-        data = {
-            "name": self.active_chat,
-            "messages": self.chats.get(self.active_chat, []),
-        }
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Chat History")
-        dlg.setFixedSize(720, 520)
-        layout = QVBoxLayout(dlg)
-        editor = QPlainTextEdit()
-        editor.setReadOnly(True)
-        editor.setPlainText(json.dumps(data, indent=2, ensure_ascii=False))
-        layout.addWidget(editor)
-        btn_row = QHBoxLayout()
-        copy_btn = QPushButton("Copy")
-        close_btn = QPushButton("Close")
-        btn_row.addStretch()
-        btn_row.addWidget(copy_btn)
-        btn_row.addWidget(close_btn)
-        layout.addLayout(btn_row)
-        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(editor.toPlainText()))
-        close_btn.clicked.connect(dlg.accept)
-        dlg.exec_()
+        self._rebuild_chat_list()
 
     def _rename_chat(self, old_name: str, new_name: str):
         if new_name in self.chats and new_name != old_name:
@@ -2111,23 +2104,13 @@ class ChatbotGUI(QWidget):
 
     def on_chat_anchor_clicked(self, url):
         s = url.toString()
-        if not s.startswith("toggle_think:"):
-            if s.startswith("msg_menu:"):
-                try:
-                    idx = int(s.split(":", 1)[1])
-                except Exception:
-                    return
-                self.open_message_menu(idx)
+        if s.startswith("msg_menu:"):
+            try:
+                idx = int(s.split(":", 1)[1])
+            except Exception:
+                return
+            self.open_message_menu(idx)
             return
-
-        try:
-            idx = int(s.split(":", 1)[1])
-        except Exception:
-            return
-        msgs = self.chat_ui.get(self.active_chat, [])
-        if 0 <= idx < len(msgs) and msgs[idx].get("role") == "assistant":
-            msgs[idx]["think_collapsed"] = not msgs[idx].get("think_collapsed", True)
-            self.render_chat(self.active_chat)
 
     def open_message_menu(self, msg_index: int):
         msgs = self.chat_ui.get(self.active_chat, [])
@@ -2211,31 +2194,12 @@ class ChatbotGUI(QWidget):
                 )
             elif role == "assistant":
                 answer = m.get("answer", m.get("content", ""))
-                think = m.get("think", "")
                 thought_s = m.get("thought_s")
-                collapsed = m.get("think_collapsed", True)
                 answer_html = self._html_escape(answer).replace("\n", "<br>")
                 block = ["<div style='margin: 10px 0 26px 0;'>", "<div style='color:#7c4dff;font-weight:800;font-size:12px;margin-bottom:8px;'>FoxAI</div>"]
 
-                if think:
-                    arrow = "▸" if collapsed else "▾"
-                    t = f"{float(thought_s):.2f}" if isinstance(thought_s, (int, float)) else "0.00"
-                    block.append(
-                        "<div style='margin: 6px 0 10px 0;'>"
-                        f"<a style='color:#777;text-decoration:none;font-size:13px;' href='toggle_think:{i}'>{arrow}</a>"
-                        f"<span style='color:#777;font-size:13px;margin-left:8px;'>Thought for {t} seconds</span>"
-                        "</div>"
-                    )
-                    if not collapsed:
-                        think_html = self._html_escape(think).replace("\n", "<br>")
-                        block.append(
-                            "<div style='background:#222;border:1px solid #2a2a2a;border-radius:12px;padding:14px 16px;margin-bottom:14px;'>"
-                            f"<div style='color:#b0b0b0;font-size:13px;line-height:1.7'>{think_html}</div>"
-                            "</div>"
-                        )
-                else:
-                    if isinstance(thought_s, (int, float)):
-                        block.append(f"<div style='color:#777;font-size:12px;margin: 6px 0 10px 0;'>Thought for {float(thought_s):.2f} seconds</div>")
+                if isinstance(thought_s, (int, float)):
+                    block.append(f"<div style='color:#777;font-size:12px;margin: 6px 0 10px 0;'>Thought for {float(thought_s):.2f} seconds</div>")
 
                 block.append(f"<div style='font-size:18px;line-height:1.7'>{answer_html}</div>")
 
@@ -2276,8 +2240,9 @@ class ChatbotGUI(QWidget):
         
         # Context formulation
         context_prompt = user_text
-        if self.rag_engine and self.rag_engine.enabled:
-            rag_docs = self.rag_engine.query(user_text)
+        rag_engine = self.get_rag_engine()
+        if rag_engine and getattr(rag_engine, "enabled", False):
+            rag_docs = rag_engine.query(user_text)
             if rag_docs:
                 context_prompt = f"Background info:\n{rag_docs}\n\nUser: {user_text}"
                 self.rag_badge.setText("RAG: ACTIVE")
@@ -2312,7 +2277,7 @@ class ChatbotGUI(QWidget):
         self._stream_buffer = ""
 
         self.chat_ui[self.active_chat].append(
-            {"role": "assistant", "answer": "", "think": "", "thought_s": None, "think_collapsed": True, "meta": None}
+            {"role": "assistant", "answer": "", "thought_s": None, "meta": None}
         )
         self._pending_chat = self.active_chat
         self._pending_msg_index = len(self.chat_ui[self.active_chat]) - 1
@@ -2461,7 +2426,6 @@ class ChatbotGUI(QWidget):
 
         if self._pending_chat is not None and self._pending_msg_index is not None:
             msg = self.chat_ui[self._pending_chat][self._pending_msg_index]
-            msg["think"] += think_delta
             msg["answer"] += answer_delta
 
         if (answer_delta or think_delta) and not self._answer_started and answer_delta:
