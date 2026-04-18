@@ -65,6 +65,7 @@ import re
 import glob
 import subprocess
 import psutil
+from collections import deque
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit, QLineEdit,
     QPushButton, QHBoxLayout, QLabel, QSplitter, QDialog,
@@ -76,7 +77,7 @@ from PyQt5.QtWidgets import (
     QGridLayout, QPlainTextEdit, QDoubleSpinBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
-from PyQt5.QtGui import QFont, QColor, QTextCursor, QPalette, QIcon
+from PyQt5.QtGui import QFont, QColor, QTextCursor, QPalette, QIcon, QPainter, QPen
 
 # mlx_lm: Apple's MLX framework for local LLM inference
 # - load(): Load a model and tokenizer from a path
@@ -1045,31 +1046,31 @@ class DevPanel(QWidget):
     def _on_benchmark_error(self, err: str):
         self.perf_result.setText(f"Benchmark failed: {err}")
         self.perf_result.setStyleSheet("color: #ff4d6a; padding: 8px;")
-    
+
     def start_ram_monitor(self):
         self.ram_log.appendPlainText("RAM Monitor started...")
         process = psutil.Process(os.getpid())
-        
+
         def update_ram():
             mem = process.memory_info().rss / (1024**3)
             self.ram_log.appendPlainText(f"RAM: {mem:.2f} GB")
-        
+
         self.ram_timer = QTimer()
         self.ram_timer.timeout.connect(update_ram)
         self.ram_timer.start(2000)
-    
+
     def stop_ram_monitor(self):
         if hasattr(self, 'ram_timer'):
             self.ram_timer.stop()
         self.ram_log.appendPlainText("RAM Monitor stopped.")
-    
+
     def build_unrestricted_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        
+
         warn_box = QGroupBox("⚠ Warning")
         w_layout = QVBoxLayout()
-        
+
         warn_text = QLabel(
             "Unrestricted Mode bypasses the 'Ask Before Acting' safety rule.\n\n"
             "When enabled:\n"
@@ -1079,24 +1080,23 @@ class DevPanel(QWidget):
         )
         warn_text.setStyleSheet("color: #ff4d6a; font-size: 13px; line-height: 1.5;")
         w_layout.addWidget(warn_text)
-        
+
         self.unrestricted_enabled = QCheckBox("Enable Unrestricted Mode")
         self.unrestricted_enabled.setStyleSheet("color: #ff4d6a; font-size: 14px; font-weight: bold;")
         self.unrestricted_enabled.stateChanged.connect(self.toggle_unrestricted)
         w_layout.addWidget(self.unrestricted_enabled)
-        
+
         warn_box.setLayout(w_layout)
         layout.addWidget(warn_box)
-        
-        # Status
+
         self.unrestricted_status = QLabel("Status: DISABLED")
         self.unrestricted_status.setStyleSheet("color: #888; font-size: 16px; padding: 20px;")
         self.unrestricted_status.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.unrestricted_status)
-        
+
         layout.addStretch()
         return widget
-    
+
     def toggle_unrestricted(self, state):
         if state == Qt.Checked:
             self.unrestricted_enabled.setText("Unrestricted Mode ACTIVE")
@@ -1112,6 +1112,64 @@ class DevPanel(QWidget):
             if self.main_app:
                 self.main_app.unrestricted_mode = False
                 self.main_app.system_prompt = self.main_app.original_system_prompt
+
+
+class MiniSparkline(QWidget):
+    def __init__(self, range_min: float = 0.0, range_max: float = 100.0, parent=None):
+        super().__init__(parent)
+        self._values = deque(maxlen=60)
+        self._range_min = range_min
+        self._range_max = range_max
+        self._available = True
+        self.setFixedHeight(26)
+
+    def set_available(self, available: bool) -> None:
+        self._available = available
+        self.update()
+
+    def add_point(self, value):
+        self._values.append(value)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        w = self.width()
+        h = self.height()
+
+        pen_bg = QPen(QColor(255, 255, 255, 30), 1)
+        painter.setPen(pen_bg)
+        painter.drawRoundedRect(0, 0, w - 1, h - 1, 6, 6)
+
+        if not self._available:
+            painter.setPen(QPen(QColor(140, 140, 140, 180), 1))
+            painter.drawText(self.rect(), Qt.AlignCenter, "N/A")
+            return
+
+        vals = [v for v in self._values if isinstance(v, (int, float))]
+        if len(vals) < 2:
+            painter.setPen(QPen(QColor(140, 140, 140, 120), 1))
+            painter.drawLine(6, h // 2, w - 6, h // 2)
+            return
+
+        rmin = self._range_min
+        rmax = self._range_max
+        if rmax <= rmin:
+            rmax = rmin + 1.0
+
+        step_x = (w - 12) / max(1, (len(vals) - 1))
+        points = []
+        for i, v in enumerate(vals):
+            nv = max(rmin, min(rmax, float(v)))
+            t = (nv - rmin) / (rmax - rmin)
+            x = 6 + i * step_x
+            y = 4 + (1.0 - t) * (h - 8)
+            points.append((x, y))
+
+        painter.setPen(QPen(QColor(124, 77, 255, 220), 2))
+        for i in range(1, len(points)):
+            painter.drawLine(int(points[i - 1][0]), int(points[i - 1][1]), int(points[i][0]), int(points[i][1]))
 
 # ---------------------------------------------------------
 # MAIN UI
@@ -1278,6 +1336,9 @@ class ChatbotGUI(QWidget):
         self.lbl_sys_ram_pct = QLabel("0.0%")
         sys_ram_row.addWidget(self.lbl_sys_ram_pct)
         hw_layout.addLayout(sys_ram_row)
+
+        self.ram_chart = MiniSparkline(0.0, 100.0)
+        hw_layout.addWidget(self.ram_chart)
         
         sys_row = QHBoxLayout()
         sys_row.addWidget(QLabel("CPU"))
@@ -1286,12 +1347,19 @@ class ChatbotGUI(QWidget):
         sys_row.addWidget(self.lbl_cpu_pct)
         hw_layout.addLayout(sys_row)
 
+        self.cpu_chart = MiniSparkline(0.0, 100.0)
+        hw_layout.addWidget(self.cpu_chart)
+
         gpu_row = QHBoxLayout()
-        gpu_row.addWidget(QLabel("GPU"))
+        gpu_row.addWidget(QLabel("GPU (Apple)"))
         gpu_row.addStretch()
         self.lbl_gpu_pct = QLabel("N/A")
         gpu_row.addWidget(self.lbl_gpu_pct)
         hw_layout.addLayout(gpu_row)
+
+        self.gpu_chart = MiniSparkline(0.0, 100.0)
+        self.gpu_chart.set_available(False)
+        hw_layout.addWidget(self.gpu_chart)
         
         s_layout.addWidget(self.hw_box)
         s_layout.addSpacing(10)
@@ -1637,6 +1705,27 @@ class ChatbotGUI(QWidget):
         self.lbl_cpu_pct.setText(cpu_percent)
         self.lbl_gpu_pct.setText(gpu_percent)
 
+        def parse_percent(s: str):
+            try:
+                return float(s.strip().replace("%", ""))
+            except Exception:
+                return None
+
+        ram_v = parse_percent(sys_ram_percent)
+        cpu_v = parse_percent(cpu_percent)
+        gpu_v = parse_percent(gpu_percent) if gpu_percent != "N/A" else None
+
+        if ram_v is not None:
+            self.ram_chart.add_point(ram_v)
+        if cpu_v is not None:
+            self.cpu_chart.add_point(cpu_v)
+
+        if gpu_v is None:
+            self.gpu_chart.set_available(False)
+        else:
+            self.gpu_chart.set_available(True)
+            self.gpu_chart.add_point(gpu_v)
+
     def _set_chat_enabled(self, enabled: bool) -> None:
         self.input_field.setEnabled(enabled)
         self.send_btn.setEnabled(enabled)
@@ -1665,8 +1754,25 @@ class ChatbotGUI(QWidget):
                         if os.path.isfile(os.path.join(full, name))
                     )
                     if has_config or has_tokenizer or has_weights:
-                        candidates.append(full)
-        return candidates[0] if candidates else ""
+                        score = 0
+                        lower = full.lower()
+                        if "qwen" in lower:
+                            score += 50
+                        if "27b" in lower:
+                            score += 20
+                        if "6bit" in lower:
+                            score += 15
+                        if "distilled" in lower:
+                            score += 10
+                        if "4bit" in lower:
+                            score -= 5
+                        candidates.append((score, full))
+
+        if not candidates:
+            return ""
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
 
     def start_ai_service(self) -> None:
         self._set_chat_enabled(False)
