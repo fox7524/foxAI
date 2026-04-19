@@ -1543,15 +1543,19 @@ class ChatbotGUI(QWidget):
         items = self.chat_list.findItems(self.active_chat, Qt.MatchExactly)
         if items:
             self.chat_list.setCurrentItem(items[0])
+        self._refresh_chat_list_row_visuals()
 
     def _add_chat_list_item(self, chat_name: str):
         item = QListWidgetItem(chat_name)
-        item.setSizeHint(QSize(220, 44))
+        item.setSizeHint(QSize(220, 52))
         self.chat_list.addItem(item)
 
         w = QWidget()
+        w.setObjectName("ChatItemRow")
+        w.setProperty("selected", False)
+        w.setAttribute(Qt.WA_StyledBackground, True)
         layout = QHBoxLayout(w)
-        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(8)
 
         lbl = QLabel(chat_name)
@@ -1560,19 +1564,37 @@ class ChatbotGUI(QWidget):
         layout.addStretch()
 
         btn = QToolButton()
-        btn.setText("⋯")
+        btn.setText("...")
         btn.setObjectName("ChatItemMenu")
         btn.setAutoRaise(True)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFocusPolicy(Qt.NoFocus)
+        btn.setFixedSize(30, 26)
         btn.clicked.connect(lambda _=False, name=chat_name: self.open_chat_list_menu(name, btn))
         layout.addWidget(btn)
 
         w.mousePressEvent = lambda _e, it=item: self.chat_list.setCurrentItem(it)
         self.chat_list.setItemWidget(item, w)
 
+    def _refresh_chat_list_row_visuals(self) -> None:
+        current = self.chat_list.currentItem()
+        for i in range(self.chat_list.count()):
+            it = self.chat_list.item(i)
+            w = self.chat_list.itemWidget(it)
+            if w is None:
+                continue
+            selected = it is current
+            if bool(w.property("selected")) != selected:
+                w.setProperty("selected", selected)
+                w.style().unpolish(w)
+                w.style().polish(w)
+                w.update()
+
     def _on_chat_list_selection_changed(self):
         it = self.chat_list.currentItem()
         if not it:
             return
+        self._refresh_chat_list_row_visuals()
         self.switch_chat(it)
 
     def open_chat_list_menu(self, chat_name: str, anchor_btn: QToolButton):
@@ -1684,6 +1706,8 @@ class ChatbotGUI(QWidget):
                 "chip": "#1a1a1a",
             }
 
+        self._theme_colors = dict(colors)
+
         qss = f"""
             QWidget {{
                 background-color: {colors['bg']};
@@ -1772,6 +1796,24 @@ class ChatbotGUI(QWidget):
                 background-color: {colors['chip']};
                 color: {colors['text']};
                 font-weight: 600;
+            }}
+            QWidget#ChatItemRow {{
+                background: transparent;
+                border-radius: 10px;
+            }}
+            QWidget#ChatItemRow:hover {{
+                background-color: {colors['panel2']};
+            }}
+            QWidget#ChatItemRow[selected="true"] {{
+                background-color: {colors['chip']};
+            }}
+            QLabel#ChatItemLabel {{
+                color: {colors['muted']};
+                font-weight: 600;
+            }}
+            QWidget#ChatItemRow[selected="true"] QLabel#ChatItemLabel {{
+                color: {colors['text']};
+                font-weight: 700;
             }}
             QTextEdit {{
                 background-color: {colors['bg']};
@@ -1889,9 +1931,11 @@ class ChatbotGUI(QWidget):
             }}
             QToolButton#ChatItemMenu {{
                 padding: 0px;
-                min-width: 24px;
-                min-height: 24px;
+                min-width: 30px;
+                min-height: 26px;
                 border-radius: 10px;
+                font-size: 14px;
+                font-weight: 800;
             }}
             QScrollBar:vertical {{
                 border: none;
@@ -1912,6 +1956,8 @@ class ChatbotGUI(QWidget):
         QApplication.instance().setStyleSheet(qss)
         self.send_btn.setObjectName("SendButton")
         self.rag_badge.setObjectName("RagBadge")
+        if hasattr(self, "chat_list") and self.chat_list is not None:
+            self._refresh_chat_list_row_visuals()
 
     def update_hw_stats(self, app_ram_gb: str, sys_ram_percent: str, cpu_percent: str, gpu_percent: str):
         shown = app_ram_gb
@@ -2176,44 +2222,69 @@ class ChatbotGUI(QWidget):
 
     def render_chat(self, chat_name: str):
         msgs = self.chat_ui.get(chat_name, [])
+        colors = getattr(self, "_theme_colors", None) or {
+            "bg": "#0f0f0f",
+            "panel": "#161616",
+            "panel2": "#222222",
+            "border": "#222222",
+            "text": "#e0e0e0",
+            "muted": "#888888",
+            "accent": "#7c4dff",
+            "accent2": "#9575cd",
+            "danger": "#ff4d6a",
+            "chip": "#1a1a1a",
+        }
+        if self.theme == "light":
+            user_bubble = "rgba(106, 61, 255, 0.12)"
+            ai_bubble = colors["panel"]
+        else:
+            user_bubble = "rgba(124, 77, 255, 0.22)"
+            ai_bubble = colors["panel2"]
+
+        base_css = (
+            "<style>"
+            "body{margin:0;padding:0;}"
+            ".wrap{padding:24px; font-size:16px; line-height:1.6;}"
+            ".row{display:flex; margin:10px 0;}"
+            ".row.user{justify-content:flex-end;}"
+            ".row.ai{justify-content:flex-start;}"
+            ".bubble{max-width:820px; border:1px solid " + colors["border"] + "; border-radius:14px; padding:12px 14px;}"
+            ".bubble.user{background:" + user_bubble + ";}"
+            ".bubble.ai{background:" + ai_bubble + ";}"
+            ".menu{margin-left:10px; color:" + colors["muted"] + "; text-decoration:none; font-size:14px; font-weight:800;}"
+            "</style>"
+        )
         parts = []
         for i, m in enumerate(msgs):
             role = m.get("role")
             if role == "user":
                 txt = self._html_escape(m.get("content", "")).replace("\n", "<br>")
                 parts.append(
-                    "<div style='margin: 10px 0 18px 0; display:flex; justify-content:flex-end;'>"
-                    "<div style='max-width: 820px; text-align:left;'>"
-                    "<div style='display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px;'>"
-                    "<div style='color:#888;font-weight:700;font-size:12px;'>YOU</div>"
-                    f"<a href='msg_menu:{i}' style='color:#777;text-decoration:none;font-size:18px; line-height:18px;'>⋯</a>"
+                    "<div class='row user'>"
+                    "<div class='bubble user'>"
+                    f"{txt}"
                     "</div>"
-                    f"<div style='font-size:16px;line-height:1.6;background:#1a1a1a;border:1px solid #222;border-radius:12px;padding:12px 14px;'>{txt}</div>"
-                    "</div>"
+                    f"<a class='menu' href='msg_menu:{i}'>...</a>"
                     "</div>"
                 )
             elif role == "assistant":
                 answer = m.get("answer", m.get("content", ""))
-                thought_s = m.get("thought_s")
                 answer_html = self._html_escape(answer).replace("\n", "<br>")
-                block = ["<div style='margin: 10px 0 26px 0;'>", "<div style='color:#7c4dff;font-weight:800;font-size:12px;margin-bottom:8px;'>FoxAI</div>"]
-
-                if isinstance(thought_s, (int, float)):
-                    block.append(f"<div style='color:#777;font-size:12px;margin: 6px 0 10px 0;'>Thought for {float(thought_s):.2f} seconds</div>")
-
-                block.append(f"<div style='font-size:18px;line-height:1.7'>{answer_html}</div>")
+                block = ["<div class='row ai'>", "<div class='bubble ai'>"]
+                block.append(answer_html)
+                block.append("</div>")
 
                 meta = m.get("meta")
                 if isinstance(meta, dict):
                     block.append(
-                        "<div style='color:#666;font-size:11px;margin-top:12px;'>"
+                        "<div style='color:" + colors["muted"] + ";font-size:11px;margin-top:8px; margin-left:10px;'>"
                         f"{meta.get('tps', 0.0):.2f} tokens/sec | {meta.get('tokens', 0)} tokens | {meta.get('elapsed', 0.0):.2f}s elapsed"
                         "</div>"
                     )
                 block.append("</div>")
                 parts.append("".join(block))
 
-        self.chat_display.setHtml("<div style='padding:24px;'>" + "".join(parts) + "</div>")
+        self.chat_display.setHtml(base_css + "<div class='wrap'>" + "".join(parts) + "</div>")
         self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
 
     def soru_sor(self):
@@ -2268,11 +2339,9 @@ class ChatbotGUI(QWidget):
         self.input_field.setDisabled(True)
         self.send_btn.setDisabled(True)
         self.stop_btn.setEnabled(True)
-        self.gen_status_lbl.setText("Thinking…")
+        self.gen_status_lbl.setText("")
         
-        # Prepare for assistant response
-        self._thinking_start_ts = time.time()
-        self._answer_started = False
+        # Prepare for assistant response (filter hidden <think>/<analysis> blocks; do not display them)
         self._stream_in_think = False
         self._stream_buffer = ""
 
@@ -2422,23 +2491,12 @@ class ChatbotGUI(QWidget):
         return "", tail
 
     def on_new_token(self, token):
-        think_delta, answer_delta = self._split_stream_delta(token)
+        _think_delta, answer_delta = self._split_stream_delta(token)
 
         if self._pending_chat is not None and self._pending_msg_index is not None:
             msg = self.chat_ui[self._pending_chat][self._pending_msg_index]
             msg["answer"] += answer_delta
-
-        if (answer_delta or think_delta) and not self._answer_started and answer_delta:
-            thought_s = max(0.0, time.time() - getattr(self, "_thinking_start_ts", time.time()))
-            if self._pending_chat is not None and self._pending_msg_index is not None:
-                self.chat_ui[self._pending_chat][self._pending_msg_index]["thought_s"] = float(thought_s)
-
-            self._answer_started = True
-            self.gen_status_lbl.setText("")
-            self._schedule_render()
-            return
-
-        if answer_delta or think_delta:
+        if answer_delta:
             self._schedule_render()
 
     def _schedule_render(self):
