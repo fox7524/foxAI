@@ -1510,6 +1510,8 @@ class ChatbotGUI(QWidget):
         stop_btn = QPushButton("■")
         stop_btn.setFixedSize(32, 32)
         stop_btn.setCursor(Qt.PointingHandCursor)
+        stop_btn.setObjectName("StopButton")
+        stop_btn.setFocusPolicy(Qt.NoFocus)
         stop_btn.setEnabled(False)
         stop_btn.clicked.connect(self.stop_generation)
         self.stop_btn = stop_btn
@@ -1875,6 +1877,22 @@ class ChatbotGUI(QWidget):
             }}
             QPushButton#SendButton:hover {{
                 background-color: {colors['accent2']};
+            }}
+            QPushButton#StopButton {{
+                background-color: {colors['chip']};
+                border: 1px solid {colors['border']};
+                border-radius: 16px;
+                padding: 0px;
+                font-size: 16px;
+                font-weight: 900;
+                color: {colors['text']};
+            }}
+            QPushButton#StopButton:hover {{
+                background-color: {colors['panel2']};
+            }}
+            QPushButton#StopButton:disabled {{
+                background-color: {colors['chip']};
+                color: {colors['muted']};
             }}
             QLabel#RagBadge {{
                 background-color: {colors['chip']};
@@ -2269,8 +2287,19 @@ class ChatbotGUI(QWidget):
                 )
             elif role == "assistant":
                 answer = m.get("answer", m.get("content", ""))
+                thought_s = m.get("thought_s")
                 answer_html = self._html_escape(answer).replace("\n", "<br>")
-                block = ["<div class='row ai'>", "<div class='bubble ai'>"]
+                block = ["<div class='row ai'>"]
+                if isinstance(thought_s, (int, float)):
+                    block.append(
+                        "<div style='display:flex; flex-direction:column; gap:6px;'>"
+                        "<div style='color:" + colors["muted"] + "; font-size:12px; font-weight:700;'>"
+                        f"Thought for {float(thought_s):.2f} seconds"
+                        "</div>"
+                    )
+                    block.append("<div class='bubble ai'>")
+                else:
+                    block.append("<div class='bubble ai'>")
                 block.append(answer_html)
                 block.append("</div>")
 
@@ -2281,6 +2310,8 @@ class ChatbotGUI(QWidget):
                         f"{meta.get('tps', 0.0):.2f} tokens/sec | {meta.get('tokens', 0)} tokens | {meta.get('elapsed', 0.0):.2f}s elapsed"
                         "</div>"
                     )
+                if isinstance(thought_s, (int, float)):
+                    block.append("</div>")
                 block.append("</div>")
                 parts.append("".join(block))
 
@@ -2341,7 +2372,9 @@ class ChatbotGUI(QWidget):
         self.stop_btn.setEnabled(True)
         self.gen_status_lbl.setText("")
         
-        # Prepare for assistant response (filter hidden <think>/<analysis> blocks; do not display them)
+        # Prepare for assistant response (filter hidden <think>/<analysis> blocks; show only thought duration)
+        self._thinking_start_ts = time.time()
+        self._answer_started = False
         self._stream_in_think = False
         self._stream_buffer = ""
 
@@ -2496,6 +2529,11 @@ class ChatbotGUI(QWidget):
         if self._pending_chat is not None and self._pending_msg_index is not None:
             msg = self.chat_ui[self._pending_chat][self._pending_msg_index]
             msg["answer"] += answer_delta
+        if answer_delta and not getattr(self, "_answer_started", False):
+            thought_s = max(0.0, time.time() - getattr(self, "_thinking_start_ts", time.time()))
+            if self._pending_chat is not None and self._pending_msg_index is not None:
+                self.chat_ui[self._pending_chat][self._pending_msg_index]["thought_s"] = float(thought_s)
+            self._answer_started = True
         if answer_delta:
             self._schedule_render()
 
