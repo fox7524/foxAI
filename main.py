@@ -111,14 +111,25 @@ class ModelLoaderWorker(QThread):
 
     def run(self):
         try:
-            try:
-                model, tokenizer = load(
-                    self.model_path,
-                    tokenizer_config={"fix_mistral_regex": True},
-                    lazy=True,
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"The tokenizer you are loading from .* with an incorrect regex pattern: .*",
                 )
-            except TypeError:
-                model, tokenizer = load(self.model_path, lazy=True)
+                try:
+                    from transformers.utils import logging as hf_logging
+                    hf_logging.set_verbosity_error()
+                except Exception:
+                    pass
+                try:
+                    model, tokenizer = load(
+                        self.model_path,
+                        tokenizer_config={"fix_mistral_regex": True},
+                        lazy=True,
+                    )
+                except TypeError:
+                    model, tokenizer = load(self.model_path, lazy=True)
             self._ensure_special_tokens(tokenizer)
             self.loaded.emit(model, tokenizer, self.model_path)
         except Exception as e:
@@ -545,6 +556,56 @@ class DevPanel(QWidget):
         if self.main_app:
             self.main_app.toggle_dev_dialog(force_state=False)
 
+    def build_rag_tab(self):
+        p = self.parent()
+        if p is not None and hasattr(p, "build_rag_tab"):
+            return p.build_rag_tab()
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.addWidget(QLabel("RAG tab is unavailable."))
+        l.addStretch()
+        return w
+
+    def build_finetune_tab(self):
+        p = self.parent()
+        if p is not None and hasattr(p, "build_finetune_tab"):
+            return p.build_finetune_tab()
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.addWidget(QLabel("Fine-tune tab is unavailable."))
+        l.addStretch()
+        return w
+
+    def build_model_tab(self):
+        p = self.parent()
+        if p is not None and hasattr(p, "build_model_tab"):
+            return p.build_model_tab()
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.addWidget(QLabel("Model tab is unavailable."))
+        l.addStretch()
+        return w
+
+    def build_testing_tab(self):
+        p = self.parent()
+        if p is not None and hasattr(p, "build_testing_tab"):
+            return p.build_testing_tab()
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.addWidget(QLabel("Testing tab is unavailable."))
+        l.addStretch()
+        return w
+
+    def build_unrestricted_tab(self):
+        p = self.parent()
+        if p is not None and hasattr(p, "build_unrestricted_tab"):
+            return p.build_unrestricted_tab()
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.addWidget(QLabel("Unrestricted tab is unavailable."))
+        l.addStretch()
+        return w
+
 
 class DevPanelDialog(QDialog):
     def __init__(self, parent=None, main_app=None):
@@ -577,7 +638,19 @@ class DevPanelDialog(QDialog):
         header.addWidget(close_btn)
         root.addLayout(header)
 
-        self.panel = DevPanel(self, main_app=main_app)
+        self.panel = QWidget(self)
+        panel_layout = QVBoxLayout(self.panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(10)
+
+        tabs = QTabWidget()
+        tabs.addTab(self.build_rag_tab(), "RAG Indexer")
+        tabs.addTab(self.build_finetune_tab(), "Fine-tune")
+        tabs.addTab(self.build_model_tab(), "Model")
+        tabs.addTab(self.build_testing_tab(), "Testing")
+        tabs.addTab(self.build_unrestricted_tab(), "Unrestricted")
+        panel_layout.addWidget(tabs)
+
         root.addWidget(self.panel)
 
         self._collapsed = False
@@ -1785,6 +1858,18 @@ class ChatbotGUI(QWidget):
                 background: transparent;
                 border: none;
             }}
+            QListWidget#ChatList::item {{
+                padding: 0px;
+                margin-bottom: 4px;
+                background: transparent;
+                border: none;
+            }}
+            QListWidget#ChatList::item:hover {{
+                background: transparent;
+            }}
+            QListWidget#ChatList::item:selected {{
+                background: transparent;
+            }}
             QListWidget::item {{
                 padding: 12px;
                 border-radius: 8px;
@@ -1878,20 +1963,25 @@ class ChatbotGUI(QWidget):
             QPushButton#SendButton:hover {{
                 background-color: {colors['accent2']};
             }}
+            QPushButton#SendButton:disabled {{
+                background-color: transparent;
+                border: 1px solid transparent;
+                color: {colors['muted']};
+            }}
             QPushButton#StopButton {{
-                background-color: {colors['chip']};
+                background-color: {colors['panel2']};
                 border: 1px solid {colors['border']};
-                border-radius: 16px;
+                border-radius: 6px;
                 padding: 0px;
                 font-size: 16px;
                 font-weight: 900;
                 color: {colors['text']};
             }}
             QPushButton#StopButton:hover {{
-                background-color: {colors['panel2']};
+                background-color: {colors['chip']};
             }}
             QPushButton#StopButton:disabled {{
-                background-color: {colors['chip']};
+                background-color: {colors['panel2']};
                 color: {colors['muted']};
             }}
             QLabel#RagBadge {{
@@ -1941,19 +2031,19 @@ class ChatbotGUI(QWidget):
             QMenu::item:selected {{
                 background-color: {colors['chip']};
             }}
-            QToolButton {{
-                background-color: {colors['chip']};
-                border: 1px solid {colors['border']};
-                border-radius: 10px;
-                color: {colors['text']};
-            }}
             QToolButton#ChatItemMenu {{
+                background-color: transparent;
+                border: 1px solid transparent;
                 padding: 0px;
                 min-width: 30px;
                 min-height: 26px;
-                border-radius: 10px;
+                border-radius: 8px;
                 font-size: 14px;
                 font-weight: 800;
+            }}
+            QToolButton#ChatItemMenu:hover {{
+                background-color: {colors['chip']};
+                border: 1px solid {colors['border']};
             }}
             QScrollBar:vertical {{
                 border: none;
