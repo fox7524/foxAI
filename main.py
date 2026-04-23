@@ -427,12 +427,6 @@ class SettingsDialog(QDialog):
 
         layout.addSpacing(15)
 
-        # Roadmap Button
-        roadmap_btn = QPushButton("View Project Roadmap")
-        roadmap_btn.setStyleSheet("background-color: #1a3a5c; color: #4d9fff;")
-        roadmap_btn.clicked.connect(self.show_roadmap)
-        layout.addWidget(roadmap_btn)
-
         # Dev Mode Note
         dev_note = QLabel("System prompt is only editable in Dev Mode (Settings → Dev Mode)")
         dev_note.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
@@ -671,6 +665,12 @@ class DevPanelDialog(QDialog):
             self.collapse_btn.setText("▾")
             self.panel.setVisible(True)
             self.setFixedSize(self._expanded_size)
+
+    def show_roadmap(self):
+        QMessageBox.information(self, "Roadmap", "Phase 1 (Apr 13-20): Foundation - Model loads, RAG indexer, LoRA fine-tune\n"
+                                                 "Phase 2 (Apr 21-27): Features - System prompt, Run button, Settings\n"
+                                                 "Phase 3 (Apr 28-30): Break It - Testing and bug fixes\n"
+                                                 "May 11: Presentation Day")
     
     def build_rag_tab(self):
         widget = QWidget()
@@ -1010,6 +1010,10 @@ class DevPanelDialog(QDialog):
     def build_testing_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
+
+        roadmap_btn = QPushButton("View Project Roadmap")
+        roadmap_btn.clicked.connect(self.show_roadmap)
+        layout.addWidget(roadmap_btn)
         
         # AST Benchmark
         bench_box = QGroupBox("AST Parse Benchmark")
@@ -1528,6 +1532,7 @@ class ChatbotGUI(QWidget):
         
         self.rag_badge = QLabel("RAG: OFF")
         h_layout.addWidget(self.rag_badge)
+        self.rag_badge.setVisible(False)
         h_layout.addSpacing(20)
         
         m_layout.addWidget(self.header_area)
