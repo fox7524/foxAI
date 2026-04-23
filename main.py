@@ -602,53 +602,67 @@ class DevPanel(QWidget):
 
 
 class DevPanelDialog(QDialog):
-    def __init__(self, parent=None, main_app=None):
+    def __init__(self, parent=None, main_app=None, embedded: bool = False):
         super().__init__(parent)
         self.main_app = main_app
-        self.setWindowTitle("Developer")
-        self.setWindowFlags(self.windowFlags() | Qt.Tool)
-        self.setFixedSize(400, 300)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
-
-        header = QHBoxLayout()
-        self.collapse_btn = QToolButton()
-        self.collapse_btn.setText("▾")
-        self.collapse_btn.setFixedSize(28, 28)
-        self.collapse_btn.clicked.connect(self.toggle_collapsed)
-        header.addWidget(self.collapse_btn)
-
-        title = QLabel("Developer")
-        title.setObjectName("DevHeader")
-        header.addWidget(title)
-        header.addStretch()
-
-        close_btn = QToolButton()
-        close_btn.setText("✕")
-        close_btn.setFixedSize(28, 28)
-        close_btn.clicked.connect(self.hide)
-        header.addWidget(close_btn)
-        root.addLayout(header)
-
-        self.panel = QWidget(self)
-        panel_layout = QVBoxLayout(self.panel)
-        panel_layout.setContentsMargins(0, 0, 0, 0)
-        panel_layout.setSpacing(10)
-
-        tabs = QTabWidget()
-        tabs.addTab(self.build_rag_tab(), "RAG Indexer")
-        tabs.addTab(self.build_finetune_tab(), "Fine-tune")
-        tabs.addTab(self.build_model_tab(), "Model")
-        tabs.addTab(self.build_testing_tab(), "Testing")
-        tabs.addTab(self.build_unrestricted_tab(), "Unrestricted")
-        panel_layout.addWidget(tabs)
-
-        root.addWidget(self.panel)
-
         self._collapsed = False
         self._expanded_size = QSize(400, 300)
+
+        root = QVBoxLayout(self)
+        if embedded:
+            self.setWindowFlags(Qt.Widget)
+            root.setContentsMargins(0, 0, 0, 0)
+            root.setSpacing(0)
+            panel_layout = root
+        else:
+            self.setWindowTitle("Developer")
+            self.setWindowFlags(self.windowFlags() | Qt.Tool)
+            self.setFixedSize(400, 300)
+            root.setContentsMargins(10, 10, 10, 10)
+            root.setSpacing(8)
+
+            header = QHBoxLayout()
+            self.collapse_btn = QToolButton()
+            self.collapse_btn.setText("▾")
+            self.collapse_btn.setFixedSize(28, 28)
+            self.collapse_btn.clicked.connect(self.toggle_collapsed)
+            header.addWidget(self.collapse_btn)
+
+            title = QLabel("Developer")
+            title.setObjectName("DevHeader")
+            header.addWidget(title)
+            header.addStretch()
+
+            close_btn = QToolButton()
+            close_btn.setText("✕")
+            close_btn.setFixedSize(28, 28)
+            close_btn.clicked.connect(self.hide)
+            header.addWidget(close_btn)
+            root.addLayout(header)
+
+            self.panel = QWidget(self)
+            root.addWidget(self.panel)
+
+        if not embedded:
+            panel_layout = QVBoxLayout(self.panel)
+            panel_layout.setContentsMargins(0, 0, 0, 0)
+            panel_layout.setSpacing(10)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._wrap_tab(self.build_rag_tab()), "RAG Indexer")
+        tabs.addTab(self._wrap_tab(self.build_finetune_tab()), "Fine-tune")
+        tabs.addTab(self._wrap_tab(self.build_model_tab()), "Model")
+        tabs.addTab(self._wrap_tab(self.build_testing_tab()), "Testing")
+        tabs.addTab(self._wrap_tab(self.build_unrestricted_tab()), "Unrestricted")
+        panel_layout.addWidget(tabs)
+
+    def _wrap_tab(self, inner: QWidget) -> QScrollArea:
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.NoFrame)
+        sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sc.setWidget(inner)
+        return sc
 
     def toggle_collapsed(self):
         self.set_collapsed(not self._collapsed)
@@ -1319,33 +1333,18 @@ class ChatbotGUI(QWidget):
 
     def _restore_dev_dialog_state(self):
         visible = self._settings.value("dev_dialog/visible", False, type=bool)
-        collapsed = self._settings.value("dev_dialog/collapsed", False, type=bool)
-        geom = self._settings.value("dev_dialog/geometry")
-
         if self.dev_mode_active and visible:
-            self._ensure_dev_dialog()
-            if geom:
-                try:
-                    self.dev_dialog.restoreGeometry(geom)
-                except Exception:
-                    pass
-            self.dev_dialog.set_collapsed(collapsed)
-            self.dev_dialog.show()
+            self.toggle_dev_dialog(force_state=True)
 
     def _save_dev_dialog_state(self):
-        if not self.dev_dialog:
+        if hasattr(self, "dev_sidebar") and self.dev_sidebar is not None:
+            self._settings.setValue("dev_dialog/visible", bool(self.dev_sidebar.isVisible()))
+        else:
             self._settings.setValue("dev_dialog/visible", False)
-            return
-        self._settings.setValue("dev_dialog/visible", self.dev_dialog.isVisible())
-        self._settings.setValue("dev_dialog/collapsed", getattr(self.dev_dialog, "_collapsed", False))
-        try:
-            self._settings.setValue("dev_dialog/geometry", self.dev_dialog.saveGeometry())
-        except Exception:
-            pass
+        self._settings.setValue("dev_dialog/collapsed", False)
 
     def _ensure_dev_dialog(self):
-        if self.dev_dialog is None:
-            self.dev_dialog = DevPanelDialog(self, main_app=self)
+        return
 
     def get_rag_engine(self):
         if self.rag_engine is not None:
@@ -1426,7 +1425,7 @@ class ChatbotGUI(QWidget):
         # ---------------- LEFT SIDEBAR (CHATS) ----------------
         self.sidebar = QFrame()
         self.sidebar.setObjectName("Sidebar")
-        self.sidebar.setFixedWidth(280)
+        self.sidebar.setMinimumWidth(140)
         s_layout = QVBoxLayout(self.sidebar)
         s_layout.setContentsMargins(15, 20, 15, 15)
         
@@ -1536,49 +1535,58 @@ class ChatbotGUI(QWidget):
         h_layout.addSpacing(20)
         
         m_layout.addWidget(self.header_area)
-        
+
+        self.content_splitter = QSplitter(Qt.Horizontal)
+        self.content_splitter.setObjectName("ContentSplitter")
+
+        self.chat_container = QFrame()
+        self.chat_container.setObjectName("ChatContainer")
+        chat_layout = QVBoxLayout(self.chat_container)
+        chat_layout.setContentsMargins(0, 0, 0, 0)
+        chat_layout.setSpacing(0)
+
         self.chat_display = QTextBrowser()
         self.chat_display.setOpenLinks(False)
         self.chat_display.anchorClicked.connect(self.on_chat_anchor_clicked)
         self.chat_display.setReadOnly(True)
-        m_layout.addWidget(self.chat_display)
+        chat_layout.addWidget(self.chat_display)
 
         self.chat_list.itemSelectionChanged.connect(self._on_chat_list_selection_changed)
         self._rebuild_chat_list()
 
         self.chat_menu_btn = None
-        
+
         # Input Area Wrapper
         self.input_container = QFrame()
         self.input_container.setObjectName("InputContainer")
         ic_layout = QVBoxLayout(self.input_container)
         ic_layout.setContentsMargins(60, 20, 60, 30)
-        
+
         self.input_box = QFrame()
         self.input_box.setObjectName("InputBox")
         ib_layout = QVBoxLayout(self.input_box)
-        
+
         self.input_field = QLineEdit()
         self.input_field.setPlaceholderText("Send a message to the model...")
         self.input_field.returnPressed.connect(self.soru_sor)
         ib_layout.addWidget(self.input_field)
-        
+
         btm_input_bar = QHBoxLayout()
         btm_input_bar.setContentsMargins(10, 0, 10, 5)
-        
+
         # Tools
         tool_layout = QHBoxLayout()
         tool_layout.setSpacing(8)
-        
+
         btn_rag = QPushButton("Files")
         btn_rag.clicked.connect(lambda: QMessageBox.information(self, "RAG", "Index your files for context!"))
-        
+
         btn_code = QPushButton("Run")
         btn_code.clicked.connect(self.run_last_code)
 
         tool_layout.addWidget(btn_rag)
         tool_layout.addWidget(btn_code)
-        
+
         send_btn = QPushButton("↑")
         send_btn.setFixedSize(32, 32)
         send_btn.setCursor(Qt.PointingHandCursor)
@@ -1593,7 +1601,7 @@ class ChatbotGUI(QWidget):
         stop_btn.setEnabled(False)
         stop_btn.clicked.connect(self.stop_generation)
         self.stop_btn = stop_btn
-        
+
         btm_input_bar.addLayout(tool_layout)
         self.gen_status_lbl = QLabel("")
         btm_input_bar.addWidget(self.gen_status_lbl)
@@ -1603,7 +1611,24 @@ class ChatbotGUI(QWidget):
         ib_layout.addLayout(btm_input_bar)
 
         ic_layout.addWidget(self.input_box)
-        m_layout.addWidget(self.input_container)
+        chat_layout.addWidget(self.input_container)
+
+        self.dev_sidebar = QFrame()
+        self.dev_sidebar.setObjectName("DevSidebar")
+        self.dev_sidebar.setVisible(False)
+        dev_layout = QVBoxLayout(self.dev_sidebar)
+        dev_layout.setContentsMargins(10, 10, 10, 10)
+        dev_layout.setSpacing(10)
+        self.dev_sidebar_widget = DevPanelDialog(self.dev_sidebar, main_app=self, embedded=True)
+        dev_layout.addWidget(self.dev_sidebar_widget)
+
+        self.content_splitter.addWidget(self.chat_container)
+        self.content_splitter.addWidget(self.dev_sidebar)
+        self.content_splitter.setSizes([1000, 0])
+        self.content_splitter.setStretchFactor(0, 1)
+        self.content_splitter.setStretchFactor(1, 0)
+
+        m_layout.addWidget(self.content_splitter)
 
         # Assemble
         splitter = QSplitter(Qt.Horizontal)
@@ -2186,13 +2211,68 @@ class ChatbotGUI(QWidget):
     def toggle_dev_dialog(self, force_state=None) -> None:
         if not self.dev_mode_active:
             return
-        self._ensure_dev_dialog()
+        if not hasattr(self, "dev_sidebar") or self.dev_sidebar is None:
+            return
+
+        show = None
         if force_state is True:
-            self.dev_dialog.show()
+            show = True
         elif force_state is False:
-            self.dev_dialog.hide()
+            show = False
         else:
-            self.dev_dialog.setVisible(not self.dev_dialog.isVisible())
+            show = not self.dev_sidebar.isVisible()
+
+        outer_sizes = None
+        if hasattr(self, "splitter") and self.splitter is not None:
+            try:
+                outer_sizes = list(self.splitter.sizes())
+            except Exception:
+                outer_sizes = None
+
+        if hasattr(self, "content_splitter") and self.content_splitter is not None:
+            try:
+                sizes = list(self.content_splitter.sizes())
+            except Exception:
+                sizes = []
+            total = sum(sizes) if sizes else 0
+
+            if show:
+                self.dev_sidebar.setVisible(True)
+                if total <= 0:
+                    self.content_splitter.setSizes([820, 360])
+                else:
+                    saved = getattr(self, "_dev_open_sizes", None)
+                    if isinstance(saved, (list, tuple)) and len(saved) == 2 and all(isinstance(x, int) for x in saved):
+                        old_total = max(1, int(saved[0] + saved[1]))
+                        desired_right = int(total * (saved[1] / old_total))
+                        min_right = 260
+                        max_right = max(min_right, total - 260)
+                        right = max(min_right, min(desired_right, max_right))
+                        left = max(260, total - right)
+                        self.content_splitter.setSizes([left, total - left])
+                    else:
+                        target = 360
+                        left = max(300, total - target)
+                        self.content_splitter.setSizes([left, target])
+            else:
+                if self.dev_sidebar.isVisible():
+                    try:
+                        cur = list(self.content_splitter.sizes())
+                    except Exception:
+                        cur = []
+                    if len(cur) >= 2:
+                        self._dev_open_sizes = [int(cur[0]), int(cur[1])]
+                if total > 0:
+                    self.content_splitter.setSizes([total, 0])
+                self.dev_sidebar.setVisible(False)
+        else:
+            self.dev_sidebar.setVisible(bool(show))
+
+        if outer_sizes and hasattr(self, "splitter") and self.splitter is not None:
+            try:
+                self.splitter.setSizes(outer_sizes)
+            except Exception:
+                pass
         self._save_dev_dialog_state()
 
     def new_chat(self):
