@@ -65,6 +65,10 @@ import re
 import glob
 import subprocess
 import psutil
+import sqlite3
+import tempfile
+import zipfile
+import urllib.request
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit, QLineEdit,
     QPushButton, QHBoxLayout, QLabel, QSplitter, QDialog,
@@ -296,6 +300,109 @@ class BenchmarkWorker(QThread):
                 token_count = len(out.split())
             tps = token_count / elapsed if elapsed > 0 else 0.0
             self.finished.emit(tps, token_count, elapsed, out[:2000])
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class RagIndexWorker(QThread):
+    finished = pyqtSignal(bool, int, str, str)
+
+    def __init__(self, main_app, folder: str, recursive: bool = True):
+        super().__init__()
+        self.main_app = main_app
+        self.folder = folder
+        self.recursive = bool(recursive)
+
+    def run(self):
+        try:
+            if not self.main_app:
+                self.finished.emit(False, 0, self.folder, "No main app")
+                return
+            eng = self.main_app.get_rag_engine()
+            if eng is None or not getattr(eng, "enabled", False):
+                self.finished.emit(False, 0, self.folder, "RAG engine not available")
+                return
+            ok = bool(eng.ingest_folder(self.folder, recursive=self.recursive))
+            count = len(getattr(eng, "documents", []) or [])
+            self.finished.emit(ok, int(count), self.folder, "")
+        except Exception as e:
+            self.finished.emit(False, 0, self.folder, str(e))
+
+
+class PythonDocsIndexWorker(QThread):
+    finished = pyqtSignal(bool, int, str)
+
+    def __init__(self, main_app, url: str):
+        super().__init__()
+        self.main_app = main_app
+        self.url = (url or "").strip()
+
+    def run(self):
+        try:
+            if not self.main_app:
+                self.finished.emit(False, 0, "No main app")
+                return
+            eng = self.main_app.get_rag_engine()
+            if eng is None or not getattr(eng, "enabled", False):
+                self.finished.emit(False, 0, "RAG engine not available")
+                return
+            url = self.url or "https://docs.python.org/3/archives/python-3.13.0-docs-text.zip"
+            tmp_root = tempfile.mkdtemp(prefix="foxai_py_docs_")
+            zip_path = os.path.join(tmp_root, "python-docs.zip")
+            urllib.request.urlretrieve(url, zip_path)
+            extract_dir = os.path.join(tmp_root, "docs")
+            os.makedirs(extract_dir, exist_ok=True)
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(extract_dir)
+            ok = bool(eng.ingest_folder(extract_dir, recursive=True))
+            count = len(getattr(eng, "documents", []) or [])
+            self.finished.emit(ok, int(count), "")
+        except Exception as e:
+            self.finished.emit(False, 0, str(e))
+
+
+class FineTuneWorker(QThread):
+    line = pyqtSignal(str)
+    finished = pyqtSignal(int, str)
+    error = pyqtSignal(str)
+
+    def __init__(self, process: subprocess.Popen, adapter_path: str):
+        super().__init__()
+        self._proc = process
+        self._adapter_path = adapter_path or ""
+        self._stopping = False
+
+    def stop(self):
+        self._stopping = True
+        try:
+            if self._proc and self._proc.poll() is None:
+                self._proc.terminate()
+        except Exception:
+            pass
+
+    def run(self):
+        try:
+            proc = self._proc
+            if proc is None:
+                self.error.emit("No process")
+                return
+            if proc.stdout is not None:
+                for ln in iter(proc.stdout.readline, ""):
+                    if ln is None:
+                        break
+                    if ln:
+                        self.line.emit(ln.rstrip("\n"))
+                    if self._stopping:
+                        break
+            try:
+                rc = proc.wait(timeout=5 if self._stopping else None)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                rc = proc.wait()
+            self.finished.emit(int(rc), self._adapter_path)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -721,6 +828,7 @@ class DevPanelDialog(QDialog):
         f_layout.addWidget(browse_btn, 0, 2)
         
         index_btn = QPushButton("Index Project Files")
+        self._rag_index_btn = index_btn
         index_btn.clicked.connect(self.index_project_files)
         f_layout.addWidget(index_btn, 1, 0, 1, 3)
         
@@ -737,6 +845,7 @@ class DevPanelDialog(QDialog):
         d_layout.addWidget(self.docs_url, 0, 1, 1, 2)
         
         index_docs_btn = QPushButton("Download & Index Python Docs")
+        self._rag_docs_btn = index_docs_btn
         index_docs_btn.clicked.connect(self.index_python_docs)
         d_layout.addWidget(index_docs_btn, 1, 0, 1, 3)
         
@@ -763,41 +872,45 @@ class DevPanelDialog(QDialog):
             QMessageBox.warning(self, "Invalid Folder", "Please select a valid folder path.")
             return
         
-        self.rag_status_lbl.setText("Indexing...")
-        QApplication.processEvents()
-
-        if self.main_app and self.main_app.get_rag_engine():
-            ok = False
-            try:
-                ok = self.main_app.rag_engine.ingest_folder(folder, recursive=True)
-            except Exception as e:
-                QMessageBox.critical(self, "Indexing Error", str(e))
-                self.rag_status_lbl.setText("Error")
-                return
-
-            stats = {}
-            try:
-                stats = self.main_app.rag_engine.get_stats()
-            except Exception:
-                stats = {}
-
-            chunk_count = stats.get("chunk_count", 0)
-            indexed = stats.get("indexed", False)
-
-            self.rag_chunks_lbl.setText(f"{chunk_count} chunks indexed")
-            self.rag_index_lbl.setText(f"Index: {chunk_count if indexed else 'None'}")
-            self.rag_status_lbl.setText("Active" if ok else "No data")
-
-            QMessageBox.information(
-                self,
-                "Indexing Complete",
-                f"Folder indexed: {folder}\nChunks: {chunk_count}"
-            )
-        else:
-            QMessageBox.warning(self, "RAG Not Available", "RAG engine is not initialized.")
+        self.rag_status_lbl.setText("Indexing…")
+        if hasattr(self, "_rag_index_btn") and self._rag_index_btn is not None:
+            self._rag_index_btn.setEnabled(False)
+        self._rag_worker = RagIndexWorker(self.main_app, folder, recursive=True)
+        self._rag_worker.finished.connect(self._on_rag_index_finished)
+        self._rag_worker.start()
     
     def index_python_docs(self):
-        QMessageBox.information(self, "Python Docs", "Python documentation indexing would download and chunk the official Python docs.\n\nThis feature requires the docs URL or a pre-downloaded docs folder.")
+        self.rag_status_lbl.setText("Indexing Python docs…")
+        if hasattr(self, "_rag_docs_btn") and self._rag_docs_btn is not None:
+            self._rag_docs_btn.setEnabled(False)
+        url = (self.docs_url.text() if hasattr(self, "docs_url") else "").strip()
+        self._docs_worker = PythonDocsIndexWorker(self.main_app, url)
+        self._docs_worker.finished.connect(self._on_docs_index_finished)
+        self._docs_worker.start()
+
+    def _on_rag_index_finished(self, ok: bool, chunk_count: int, folder: str, err: str):
+        if hasattr(self, "_rag_index_btn") and self._rag_index_btn is not None:
+            self._rag_index_btn.setEnabled(True)
+        if err:
+            self.rag_status_lbl.setText("Error")
+            QMessageBox.critical(self, "Indexing Error", err)
+            return
+        self.rag_chunks_lbl.setText(f"{int(chunk_count)} chunks indexed")
+        self.rag_index_lbl.setText(f"Index: {int(chunk_count) if ok else 'None'}")
+        self.rag_status_lbl.setText("Active" if ok else "No data")
+        QMessageBox.information(self, "Indexing Complete", f"Folder indexed: {folder}\nChunks: {int(chunk_count)}")
+
+    def _on_docs_index_finished(self, ok: bool, chunk_count: int, err: str):
+        if hasattr(self, "_rag_docs_btn") and self._rag_docs_btn is not None:
+            self._rag_docs_btn.setEnabled(True)
+        if err:
+            self.rag_status_lbl.setText("Error")
+            QMessageBox.critical(self, "Docs Indexing Error", err)
+            return
+        self.rag_chunks_lbl.setText(f"{int(chunk_count)} chunks indexed")
+        self.rag_index_lbl.setText(f"Index: {int(chunk_count) if ok else 'None'}")
+        self.rag_status_lbl.setText("Active" if ok else "No data")
+        QMessageBox.information(self, "Docs Indexing Complete", f"Chunks: {int(chunk_count)}")
     
     def reset_rag(self):
         if self.main_app and self.main_app.get_rag_engine():
@@ -848,11 +961,15 @@ class DevPanelDialog(QDialog):
         d_layout = QVBoxLayout()
         
         self.use_sqlite = QCheckBox("Use SQLite Database (dataset table)")
-        self.use_sqlite.setChecked(True)
+        self.use_sqlite.setChecked(False)
         d_layout.addWidget(self.use_sqlite)
         
         self.use_jsonl = QCheckBox("Use JSONL File")
+        self.use_jsonl.setChecked(True)
         d_layout.addWidget(self.use_jsonl)
+
+        self.use_sqlite.toggled.connect(lambda v: self.use_jsonl.setChecked(False) if v else None)
+        self.use_jsonl.toggled.connect(lambda v: self.use_sqlite.setChecked(False) if v else None)
         
         jsonl_row = QHBoxLayout()
         self.jsonl_path = QLineEdit()
@@ -869,11 +986,14 @@ class DevPanelDialog(QDialog):
         # Control buttons
         btn_row = QHBoxLayout()
         start_train_btn = QPushButton("Start Training")
+        self._start_train_btn = start_train_btn
         start_train_btn.setStyleSheet("background-color: #1a5c3a; color: #4dff9f;")
         start_train_btn.clicked.connect(self.start_training)
         btn_row.addWidget(start_train_btn)
         
         stop_train_btn = QPushButton("Stop")
+        self._stop_train_btn = stop_train_btn
+        stop_train_btn.setEnabled(False)
         stop_train_btn.clicked.connect(self.stop_training)
         btn_row.addWidget(stop_train_btn)
         
@@ -896,25 +1016,191 @@ class DevPanelDialog(QDialog):
         path, _ = QFileDialog.getOpenFileName(self, "Select JSONL File", "", "JSONL Files (*.jsonl)")
         if path:
             self.jsonl_path.setText(path)
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Select JSONL Dataset Folder")
+        if folder:
+            self.jsonl_path.setText(folder)
     
     def start_training(self):
-        self.train_log.appendPlainText("Starting LoRA training...")
-        self.train_progress.setValue(10)
-        QApplication.processEvents()
-        
-        # In a real implementation, this would call mlx_lm.lora
-        # For now, simulate progress
-        for i in range(10, 101, 10):
-            time.sleep(0.5)
-            self.train_progress.setValue(i)
-            self.train_log.appendPlainText(f"Step {i}/100 completed...")
-            QApplication.processEvents()
-        
-        self.train_log.appendPlainText("Training complete! Adapter saved.")
+        if hasattr(self, "_ft_worker") and self._ft_worker is not None:
+            QMessageBox.warning(self, "Training", "Training is already running.")
+            return
+        if not self.main_app or not getattr(self.main_app, "current_model_path", ""):
+            QMessageBox.warning(self, "No Model", "Load a model first (Dev → Model).")
+            return
+        model_path = self.main_app.current_model_path
+        if not os.path.isdir(model_path):
+            QMessageBox.warning(self, "Invalid Model", "Model path is not valid.")
+            return
+
+        try:
+            data_dir = self._prepare_finetune_data_dir()
+        except Exception as e:
+            QMessageBox.critical(self, "Dataset Error", str(e))
+            return
+
+        rank = int(self.lora_rank.value())
+        alpha = int(self.lora_alpha.value())
+        iters = int(self.lora_iters.value())
+        batch = int(self.lora_batch.value())
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        adapter_path = os.path.abspath(os.path.join("lora_data", "adapters", f"run_{ts}"))
+        os.makedirs(adapter_path, exist_ok=True)
+        cfg_path = os.path.abspath(os.path.join("lora_data", f"lora_cfg_{ts}.yaml"))
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            f.write("lora_parameters:\n")
+            f.write(f"  rank: {rank}\n")
+            f.write("  dropout: 0.0\n")
+            f.write(f"  scale: {alpha}\n")
+
+        self.train_log.clear()
+        self.train_log.appendPlainText(f"Model: {model_path}")
+        self.train_log.appendPlainText(f"Data: {data_dir}")
+        self.train_log.appendPlainText(f"Adapter: {adapter_path}")
+        self.train_log.appendPlainText(f"Config: {cfg_path}")
+
+        self.train_progress.setRange(0, 0)
+        if hasattr(self, "_start_train_btn") and self._start_train_btn is not None:
+            self._start_train_btn.setEnabled(False)
+        if hasattr(self, "_stop_train_btn") and self._stop_train_btn is not None:
+            self._stop_train_btn.setEnabled(True)
+
+        eng = FinetuneEngine(model_path)
+        try:
+            proc = eng.start_training(
+                batch_size=batch,
+                num_layers=16,
+                iters=iters,
+                dataset_path=data_dir,
+                adapter_path=adapter_path,
+                config_path=cfg_path,
+            )
+        except Exception as e:
+            self.train_progress.setRange(0, 100)
+            self.train_progress.setValue(0)
+            if hasattr(self, "_start_train_btn") and self._start_train_btn is not None:
+                self._start_train_btn.setEnabled(True)
+            if hasattr(self, "_stop_train_btn") and self._stop_train_btn is not None:
+                self._stop_train_btn.setEnabled(False)
+            QMessageBox.critical(self, "Training Error", str(e))
+            return
+
+        self._ft_worker = FineTuneWorker(proc, adapter_path)
+        self._ft_worker.line.connect(self.train_log.appendPlainText)
+        self._ft_worker.finished.connect(self._on_train_finished)
+        self._ft_worker.error.connect(self._on_train_error)
+        self._ft_worker.start()
     
     def stop_training(self):
-        self.train_log.appendPlainText("Training stopped by user.")
-        self.train_progress.setValue(0)
+        if hasattr(self, "_ft_worker") and self._ft_worker is not None:
+            try:
+                self._ft_worker.stop()
+            except Exception:
+                pass
+        if hasattr(self, "_stop_train_btn") and self._stop_train_btn is not None:
+            self._stop_train_btn.setEnabled(False)
+
+    def _on_train_error(self, err: str):
+        self.train_log.appendPlainText(f"ERROR: {err}")
+        self._cleanup_train_ui()
+        QMessageBox.critical(self, "Training Error", err)
+
+    def _on_train_finished(self, rc: int, adapter_path: str):
+        self.train_log.appendPlainText(f"Training finished (exit={int(rc)})")
+        if adapter_path:
+            self.train_log.appendPlainText(f"Adapter saved at: {adapter_path}")
+            self.train_log.appendPlainText("To fuse: python -m mlx_lm fuse --model <base_model> --adapter-path <adapter> --save-path <new_model>")
+        self._cleanup_train_ui(success=(int(rc) == 0))
+
+    def _cleanup_train_ui(self, success: bool = False):
+        if hasattr(self, "_ft_worker"):
+            self._ft_worker = None
+        self.train_progress.setRange(0, 100)
+        self.train_progress.setValue(100 if success else 0)
+        if hasattr(self, "_start_train_btn") and self._start_train_btn is not None:
+            self._start_train_btn.setEnabled(True)
+        if hasattr(self, "_stop_train_btn") and self._stop_train_btn is not None:
+            self._stop_train_btn.setEnabled(False)
+
+    def _prepare_finetune_data_dir(self) -> str:
+        use_sqlite = bool(getattr(self, "use_sqlite", None) and self.use_sqlite.isChecked())
+        use_jsonl = bool(getattr(self, "use_jsonl", None) and self.use_jsonl.isChecked())
+        base = os.path.abspath("lora_data")
+        os.makedirs(base, exist_ok=True)
+
+        if use_sqlite:
+            db_path = os.path.abspath("dataset.db")
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS dataset (instruction TEXT, output TEXT)")
+            conn.commit()
+            cur.execute("SELECT instruction, output FROM dataset")
+            rows = cur.fetchall()
+            conn.close()
+            if not rows:
+                raise RuntimeError("dataset.db is empty. Add rows to table 'dataset' (instruction, output) or use JSONL.")
+            out_dir = os.path.join(base, "sqlite_export")
+            os.makedirs(out_dir, exist_ok=True)
+            texts = []
+            for ins, out in rows:
+                ins = (ins or "").strip()
+                out = (out or "").strip()
+                if not ins or not out:
+                    continue
+                texts.append(f"<|im_start|>user\n{ins}<|im_end|>\n<|im_start|>assistant\n{out}<|im_end|>\n")
+            if not texts:
+                raise RuntimeError("dataset.db contains no usable rows.")
+            self._write_train_valid_jsonl(out_dir, texts)
+            return out_dir
+
+        if use_jsonl:
+            p = (self.jsonl_path.text() if hasattr(self, "jsonl_path") else "").strip()
+            if not p:
+                raise RuntimeError("Select a JSONL file or directory.")
+            p = os.path.abspath(p)
+            if os.path.isdir(p):
+                train = os.path.join(p, "train.jsonl")
+                valid = os.path.join(p, "valid.jsonl")
+                if os.path.exists(train) and os.path.exists(valid):
+                    return p
+                all_jsonl = sorted(glob.glob(os.path.join(p, "*.jsonl")))
+                if not all_jsonl:
+                    raise RuntimeError("No JSONL files found in selected directory.")
+                lines = []
+                for fp in all_jsonl:
+                    with open(fp, "r", encoding="utf-8") as f:
+                        lines += [ln for ln in f.read().splitlines() if ln.strip()]
+                if not lines:
+                    raise RuntimeError("JSONL directory is empty.")
+                out_dir = os.path.join(base, "jsonl_export")
+                os.makedirs(out_dir, exist_ok=True)
+                self._write_train_valid_jsonl(out_dir, lines)
+                return out_dir
+            if os.path.isfile(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    lines = [ln for ln in f.read().splitlines() if ln.strip()]
+                if not lines:
+                    raise RuntimeError("JSONL file is empty.")
+                out_dir = os.path.join(base, "jsonl_export")
+                os.makedirs(out_dir, exist_ok=True)
+                self._write_train_valid_jsonl(out_dir, lines)
+                return out_dir
+            raise RuntimeError("Invalid JSONL path.")
+
+        raise RuntimeError("Select a dataset source (SQLite or JSONL).")
+
+    def _write_train_valid_jsonl(self, out_dir: str, lines: list[str]) -> None:
+        n = len(lines)
+        split = max(1, int(n * 0.9))
+        train_lines = lines[:split]
+        valid_lines = lines[split:] or lines[:1]
+        with open(os.path.join(out_dir, "train.jsonl"), "w", encoding="utf-8") as ft:
+            for ln in train_lines:
+                ft.write(ln.rstrip("\n") + "\n")
+        with open(os.path.join(out_dir, "valid.jsonl"), "w", encoding="utf-8") as fv:
+            for ln in valid_lines:
+                fv.write(ln.rstrip("\n") + "\n")
     
     def build_model_tab(self):
         widget = QWidget()

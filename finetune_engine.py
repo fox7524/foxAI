@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 from typing import List
 
 class FinetuneEngine:
@@ -45,19 +46,15 @@ class FinetuneEngine:
                 
         return train_path
 
-    def start_training(self, batch_size=2, lora_layers=8, iters=100, dataset_path=None) -> subprocess.Popen:
+    def start_training(self, batch_size=2, num_layers=16, iters=100, dataset_path=None, adapter_path=None, config_path=None) -> subprocess.Popen:
         """Starts the MLX LoRA training loop as a non-blocking subprocess."""
         data_dir = dataset_path if dataset_path else self.dataset_dir
-        cmd = [
-            "python", "-m", "mlx_lm.lora",
-            "--model", self.model_path,
-            "--train",
-            "--data", data_dir,
-            "--batch-size", str(batch_size),
-            "--lora-layers", str(lora_layers),
-            "--iters", str(iters)
-        ]
-        print("Starting Fine-tuning sequence:", " ".join(cmd))
+        cmd = [sys.executable, "-m", "mlx_lm", "lora", "--model", self.model_path, "--train", "--data", data_dir]
+        cmd += ["--batch-size", str(batch_size), "--num-layers", str(num_layers), "--iters", str(iters)]
+        if adapter_path:
+            cmd += ["--adapter-path", str(adapter_path)]
+        if config_path:
+            cmd += ["--config", str(config_path)]
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
