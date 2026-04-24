@@ -1,9 +1,9 @@
 """
-FoxAI Studio - Main Application Entry Point
+LokumAI Studio - Main Application Entry Point
 
 ARCHITECTURE OVERVIEW:
 ======================
-FoxAI Studio is a dual-mode AI coding assistant with two distinct interfaces:
+LokumAI Studio is a dual-mode AI coding assistant with two distinct interfaces:
 
 1. USER MODE (default):
    - Clean, minimal interface for chatting with the AI
@@ -98,7 +98,7 @@ except ImportError:
     pass
 
 # Application version and dev mode password
-VERSION = "FoxAI - Developer Edition"
+VERSION = "LokumAI"
 DEV_MODE_PASSWORD = "123"
 
 # ---------------------------------------------------------
@@ -708,7 +708,7 @@ class DevPanel(QWidget):
         return w
 
 
-class DevPanelDialog(QDialog):
+class DevPanelDialog(QWidget):
     def __init__(self, parent=None, main_app=None, embedded: bool = False):
         super().__init__(parent)
         self.main_app = main_app
@@ -717,7 +717,6 @@ class DevPanelDialog(QDialog):
 
         root = QVBoxLayout(self)
         if embedded:
-            self.setWindowFlags(Qt.Widget)
             root.setContentsMargins(0, 0, 0, 0)
             root.setSpacing(0)
             panel_layout = root
@@ -1598,7 +1597,7 @@ class DevPanelDialog(QDialog):
             self.unrestricted_status.setStyleSheet("color: #ff4d6a; font-size: 18px; font-weight: bold; padding: 20px;")
             if self.main_app:
                 self.main_app.unrestricted_mode = True
-                self.main_app.system_prompt = "You are FoxAI, a helpful assistant. Answer directly without asking clarifying questions."
+                self.main_app.system_prompt = "You are LokumAI, a helpful assistant. Answer directly without asking clarifying questions."
         else:
             self.unrestricted_enabled.setText("Enable Unrestricted Mode")
             self.unrestricted_status.setText("Status: DISABLED")
@@ -1622,7 +1621,7 @@ class ChatbotGUI(QWidget):
         self.dev_mode_active = False
         self.dev_sidebar_shown = False
         self.dev_dialog = None
-        self._settings = QSettings("FoxAI", "FoxAIStudio")
+        self._settings = QSettings("LokumAI", "LokumAIStudio")
         
         # Engines (lazy-init to avoid loading embedding models unless needed)
         self.rag_engine = None
@@ -1699,9 +1698,9 @@ class ChatbotGUI(QWidget):
         """
         prompts_path = os.path.join(os.path.dirname(__file__), "prompts.json")
         default_prompts = {
-            "system_prompt": "You are FoxAI, a local expert AI pair-programmer.\nYour core rule is: **ASK BEFORE ACTING**.\n\nBefore writing any code or providing a solution, you MUST:\n1. List EVERY unclear point or assumption in the user's request.\n2. Ask the user to clarify these points one by one.\n3. DO NOT write a single line of code until all questions are answered and the requirements are 100% clear.\n\nStyle rules:\n- Write production-grade, PEP8-compliant Python code.\n- Use type hints for all functions.\n- Be concise but thorough in your explanations.",
+            "system_prompt": "You are LokumAI, a local expert AI pair-programmer.\nYour core rule is: **ASK BEFORE ACTING**.\n\nBefore writing any code or providing a solution, you MUST:\n1. List EVERY unclear point or assumption in the user's request.\n2. Ask the user to clarify these points one by one.\n3. DO NOT write a single line of code until all questions are answered and the requirements are 100% clear.\n\nStyle rules:\n- Write production-grade, PEP8-compliant Python code.\n- Use type hints for all functions.\n- Be concise but thorough in your explanations.",
             "user_prompt": "You are a helpful AI assistant. Provide clear, concise, and accurate responses to the user's questions. Be friendly and professional.",
-            "unrestricted_prompt": "You are FoxAI, a helpful assistant. Answer directly without asking clarifying questions.",
+            "unrestricted_prompt": "You are LokumAI, a helpful assistant. Answer directly without asking clarifying questions.",
             "theme": "dark",
             "model_path": ""
         }
@@ -1759,7 +1758,7 @@ class ChatbotGUI(QWidget):
         
         # Header
         top_bar = QHBoxLayout()
-        logo = QLabel("FoxAI")
+        logo = QLabel("LokumAI")
         logo.setObjectName("Logo")
         
         new_chat_btn = QPushButton("+ New")
@@ -1944,6 +1943,7 @@ class ChatbotGUI(QWidget):
         self.dev_sidebar = QFrame()
         self.dev_sidebar.setObjectName("DevSidebar")
         self.dev_sidebar.setVisible(False)
+        self.dev_sidebar.setMinimumWidth(260)
         dev_layout = QVBoxLayout(self.dev_sidebar)
         dev_layout.setContentsMargins(10, 10, 10, 10)
         dev_layout.setSpacing(10)
@@ -2582,6 +2582,11 @@ class ChatbotGUI(QWidget):
                         target = 360
                         left = max(300, total - target)
                         self.content_splitter.setSizes([left, target])
+                try:
+                    self.content_splitter.update()
+                    self.dev_sidebar.update()
+                except Exception:
+                    pass
             else:
                 if self.dev_sidebar.isVisible():
                     try:
@@ -2767,8 +2772,8 @@ class ChatbotGUI(QWidget):
             ".row{display:flex; margin:10px 0;}"
             ".row.user{justify-content:flex-end;}"
             ".row.ai{justify-content:flex-start;}"
-            ".bubble{max-width:820px; border-radius:20px; padding:18px 22px;}"
-            ".bubble.user{background:" + user_bubble + ";}"
+            ".bubble{border-radius:20px; padding:18px 22px;}"
+            ".bubble.user{background:" + user_bubble + "; display:inline-block; width:fit-content; max-width:82%; text-align:right; white-space:pre-wrap; overflow-wrap:anywhere;}"
             ".aiwrap{max-width:820px; padding:12px 8px;}"
             ".thought{color:" + colors["muted"] + "; font-size:12px; font-weight:700; margin-bottom:8px;}"
             ".aitext{color:" + colors["text"] + "; font-size:18px; line-height:1.7;}"
