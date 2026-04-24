@@ -338,6 +338,8 @@ class PythonDocsIndexWorker(QThread):
         self.url = (url or "").strip()
 
     def run(self):
+        import shutil
+        tmp_root = None
         try:
             if not self.main_app:
                 self.finished.emit(False, 0, "No main app")
@@ -359,6 +361,9 @@ class PythonDocsIndexWorker(QThread):
             self.finished.emit(ok, int(count), "")
         except Exception as e:
             self.finished.emit(False, 0, str(e))
+        finally:
+            if tmp_root:
+                shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 class FineTuneWorker(QThread):
