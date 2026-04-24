@@ -1602,7 +1602,13 @@ class DevPanelDialog(QWidget):
             self.unrestricted_status.setStyleSheet("color: #ff4d6a; font-size: 18px; font-weight: bold; padding: 20px;")
             if self.main_app:
                 self.main_app.unrestricted_mode = True
-                self.main_app.system_prompt = "You are LokumAI, a helpful assistant. Answer directly without asking clarifying questions."
+                self.main_app.system_prompt = (
+                    "You are LokumAI, a helpful assistant. Answer directly without asking clarifying questions.\n\n"
+                    "Output format rules:\n"
+                    "- Put your private reasoning in <think>...</think>.\n"
+                    "- After </think>, output only the final answer for the user.\n"
+                    "- Never include the contents of <think> in the final answer."
+                )
         else:
             self.unrestricted_enabled.setText("Enable Unrestricted Mode")
             self.unrestricted_status.setText("Status: DISABLED")
@@ -2688,6 +2694,20 @@ class ChatbotGUI(QWidget):
                 return
             self.open_message_menu(idx)
             return
+        if s.startswith("toggle_thought:"):
+            try:
+                idx = int(s.split(":", 1)[1])
+            except Exception:
+                return
+            msgs = self.chat_ui.get(self.active_chat, [])
+            if not (0 <= idx < len(msgs)):
+                return
+            msg = msgs[idx]
+            if msg.get("role") != "assistant":
+                return
+            msg["think_open"] = not bool(msg.get("think_open"))
+            self.render_chat(self.active_chat)
+            return
 
     def open_message_menu(self, msg_index: int):
         msgs = self.chat_ui.get(self.active_chat, [])
@@ -2770,6 +2790,14 @@ class ChatbotGUI(QWidget):
         else:
             user_bubble = colors["panel2"]
 
+        def _format_text_to_html(s: str) -> str:
+            import re
+
+            t = self._html_escape(s or "")
+            t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+            t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
+            return t.replace("\n", "<br>")
+
         base_css = (
             "<style>"
             "body{margin:0;padding:0;}"
@@ -2777,34 +2805,57 @@ class ChatbotGUI(QWidget):
             ".row{display:flex; margin:10px 0;}"
             ".row.user{justify-content:flex-end;}"
             ".row.ai{justify-content:flex-start;}"
-            ".bubble{border-radius:20px; padding:18px 22px;}"
-            ".bubble.user{background:" + user_bubble + "; display:inline-block; width:fit-content; max-width:82%; text-align:right; white-space:pre-wrap; overflow-wrap:anywhere;}"
-            ".aiwrap{max-width:820px; padding:12px 8px;}"
-            ".thought{color:" + colors["muted"] + "; font-size:12px; font-weight:700; margin-bottom:8px;}"
+            ".bubble{border-radius:18px; padding:12px 16px;}"
+            ".usercol{display:flex; flex-direction:column; align-items:flex-end; max-width:82%;}"
+            ".bubble.user{background:" + user_bubble + "; border:1px solid " + colors["border"] + "; display:inline-block; max-width:100%; text-align:right; white-space:pre-wrap; overflow-wrap:anywhere;}"
+            ".aiwrap{max-width:820px; padding:10px 8px;}"
+            ".model{color:" + colors["muted"] + "; font-size:13px; font-weight:600; margin:2px 0 10px 0;}"
+            ".thoughtwrap{background:" + colors["panel2"] + "; border:1px solid " + colors["border"] + "; border-radius:12px; padding:12px 14px; margin:0 0 14px 0;}"
+            ".thoughthdr{color:" + colors["muted"] + "; font-size:13px; font-weight:700; margin:0 0 10px 0;}"
+            ".thoughttoggle{color:" + colors["muted"] + "; text-decoration:none; font-weight:900; margin-right:10px;}"
+            ".thinktext{color:" + colors["text"] + "; font-size:15px; line-height:1.6;}"
             ".aitext{color:" + colors["text"] + "; font-size:18px; line-height:1.7;}"
             ".menu{margin-left:10px; color:" + colors["muted"] + "; text-decoration:none; font-size:14px; font-weight:800;}"
+            ".menu.usermenu{margin-left:0px; margin-top:6px; font-size:12px;}"
+            "code{background:" + colors["chip"] + "; padding:2px 6px; border-radius:6px; font-family:Menlo, monospace; font-size:13px;}"
             "</style>"
         )
         parts = []
         for i, m in enumerate(msgs):
             role = m.get("role")
             if role == "user":
-                txt = self._html_escape(m.get("content", "")).replace("\n", "<br>")
+                txt = _format_text_to_html(m.get("content", ""))
                 parts.append(
                     "<div class='row user'>"
+                    "<div class='usercol'>"
                     "<div class='bubble user'>"
                     f"{txt}"
                     "</div>"
-                    f"<a class='menu' href='msg_menu:{i}'>...</a>"
+                    f"<a class='menu usermenu' href='msg_menu:{i}'>...</a>"
+                    "</div>"
                     "</div>"
                 )
             elif role == "assistant":
                 answer = m.get("answer", m.get("content", ""))
                 thought_s = m.get("thought_s")
-                answer_html = self._html_escape(answer).replace("\n", "<br>")
+                answer_html = _format_text_to_html(answer)
                 block = ["<div class='row ai'>", "<div class='aiwrap'>"]
+                block.append("<div class='model'>Lokum AI</div>")
+                think = m.get("think", "")
                 if isinstance(thought_s, (int, float)):
-                    block.append(f"<div class='thought'>Thought for {float(thought_s):.2f} seconds</div>")
+                    is_open = bool(m.get("think_open")) and bool(think)
+                    arrow = "▾" if is_open else "▸"
+                    block.append("<div class='thoughtwrap'>")
+                    block.append(
+                        "<div class='thoughthdr'>"
+                        f"<a class='thoughttoggle' href='toggle_thought:{i}'>{arrow}</a>"
+                        f"Thought for {float(thought_s):.2f} seconds"
+                        "</div>"
+                    )
+                    if is_open:
+                        think_html = _format_text_to_html(think)
+                        block.append(f"<div class='thinktext'>{think_html}</div>")
+                    block.append("</div>")
                 block.append(f"<div class='aitext'>{answer_html}</div>")
 
                 meta = m.get("meta")
@@ -2882,7 +2933,7 @@ class ChatbotGUI(QWidget):
         self._stream_buffer = ""
 
         self.chat_ui[self.active_chat].append(
-            {"role": "assistant", "answer": "", "thought_s": None, "meta": None}
+            {"role": "assistant", "answer": "", "think": "", "think_open": False, "thought_s": None, "meta": None}
         )
         self._pending_chat = self.active_chat
         self._pending_msg_index = len(self.chat_ui[self.active_chat]) - 1
@@ -3027,10 +3078,12 @@ class ChatbotGUI(QWidget):
         return "", tail
 
     def on_new_token(self, token):
-        _think_delta, answer_delta = self._split_stream_delta(token)
+        think_delta, answer_delta = self._split_stream_delta(token)
 
         if self._pending_chat is not None and self._pending_msg_index is not None:
             msg = self.chat_ui[self._pending_chat][self._pending_msg_index]
+            if think_delta:
+                msg["think"] = (msg.get("think", "") or "") + think_delta
             msg["answer"] += answer_delta
         if answer_delta and not getattr(self, "_answer_started", False):
             thought_s = max(0.0, time.time() - getattr(self, "_thinking_start_ts", time.time()))

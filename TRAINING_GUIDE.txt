@@ -1,0 +1,237 @@
+LOKUM AI — TRAINING + DEV PANEL GUIDE
+
+This document explains what each major feature does, how to use it, and how the Developer Panel (Dev Mode) connects RAG and LoRA fine-tuning to the app.
+
+
+1) APP OVERVIEW (WHAT YOU HAVE)
+
+Lokum AI is a single-process local desktop app (PyQt). It runs:
+- Chat UI (message history, streaming output, and controls)
+- Local model inference (MLX)
+- Optional RAG retrieval (FAISS + embeddings)
+- Optional LoRA fine-tuning (MLX LoRA training via subprocess)
+
+Everything is integrated into one UI. No server is required.
+
+
+2) CHAT UI (WHAT EACH PART DOES)
+
+2.1 Message layout
+- User messages are right-aligned bubbles.
+- Assistant messages are left-aligned and can show:
+  - “Lokum AI” header
+  - a collapsible “Thought for X.XX seconds” section (if thoughts are captured)
+  - the final answer text
+
+2.2 Streaming output
+- The assistant response streams token-by-token.
+- If the model uses <think>...</think> or <analysis>...</analysis>, the UI can separate:
+  - “think” text → stored and shown only in the collapsible Thought box
+  - “answer” text → displayed as the final visible answer
+
+Important: If the model does NOT follow the <think> format rules, the UI cannot reliably “move” reasoning into the Thought box. The recommended approach is to enforce tags in the system prompt.
+
+2.3 Buttons
+- Files: currently not the RAG indexer UI; it is a simple info/placeholder button.
+- Run: executes the last Python code block found in the most recent assistant answer (basic runner, not sandboxed).
+- Send (↑): sends your message to the model.
+- Stop (■): stops generation mid-stream.
+
+
+3) DEV MODE (DEVELOPER PANEL) — HOW IT WORKS
+
+3.1 What Dev Mode is
+Dev Mode is a right-side panel inside the main window.
+- It is password-gated (Dev Mode unlock).
+- It’s embedded into the main layout (not a separate window).
+- Tabs are scrollable (so content is reachable on small screens).
+- Sidebar widths are managed by splitters and are restored to prevent size-jumping.
+
+3.2 How to open Dev Mode
+1) Click the Dev button in the left sidebar.
+2) Enter the developer password.
+3) Dev toggle becomes available; use it to show/hide the right sidebar panel.
+
+3.3 Dev Mode tabs (what each does)
+
+A) RAG Indexer
+Purpose:
+- Build an on-disk searchable knowledge index used during chat.
+
+What you can do:
+1) Index Project Files
+   - Choose a folder and index it.
+   - Runs in a background thread (UI stays responsive).
+2) Download & Index Python Docs
+   - Downloads the Python docs text archive, extracts it, indexes the extracted files.
+   - Runs in a background thread.
+3) Reset RAG Index
+   - Clears the stored index and document store.
+
+What happens internally:
+- Files are chunked into passages and embedded into vectors.
+- Vectors are stored in a FAISS index, with chunk text stored alongside.
+
+Supported ingestion types (depending on installed libraries):
+- Code/text files (default)
+- PDF (requires PyMuPDF / fitz)
+- DOCX (requires python-docx)
+- ZIM (requires python-zim)
+
+Using RAG in chat:
+- When RAG is enabled and index has content, the app retrieves relevant chunks.
+- It injects those chunks into the prompt as “Background info: ...” before generation.
+
+Limitations:
+- The main chat UI currently does not show “which chunks were retrieved” as a separate sources panel.
+- If embeddings/FAISS dependencies are missing, indexing will fail.
+
+
+B) Fine-tune (LoRA)
+Purpose:
+- Train a LoRA adapter for your base model using MLX LoRA training.
+
+What you can do:
+1) Choose dataset source
+   - SQLite dataset: reads a local dataset.db table.
+   - JSONL dataset: choose a JSONL file or a folder containing train.jsonl/valid.jsonl.
+2) Start Training
+   - Launches: python -m mlx_lm lora ... (as a subprocess)
+   - Streams live logs into the UI.
+3) Stop
+   - Terminates the training subprocess.
+
+Dataset safety / normalization:
+- If you select a file or folder that has plain text lines (not valid JSON objects),
+  the app converts each line into a safe JSONL entry:
+  {"text": "..."}
+- If train.jsonl/valid.jsonl exist but are invalid JSONL, it exports a cleaned dataset
+  to a new folder under lora_data/.
+
+Outputs:
+- A LoRA adapter folder/path (adapter weights).
+- You can later fuse adapter + base model into a new merged model using mlx_lm fuse.
+
+Important RAM note:
+- Training loads the model again (in the MLX training subprocess).
+- If the model is already loaded in the app, you may hit RAM pressure.
+
+
+C) Model
+Purpose:
+- Select or load a model path used for inference.
+
+What you can do:
+- Load a detected model (from your local models directory).
+- Or manually enter a model path.
+
+
+D) Testing
+Purpose:
+- Quick regression / stress utilities to validate app behavior.
+
+What you can do:
+- Run benchmark-style checks (e.g., AST parse benchmark).
+- Run stress tests.
+- Any “roadmap” type button (if present) is just informational.
+
+
+E) Unrestricted
+Purpose:
+- Toggle a less constrained assistant behavior mode.
+
+Important:
+- This mode changes the system prompt while enabled.
+- You should keep the <think>...</think> output format rule even in this mode if you want collapsible thoughts.
+
+
+4) RAG + TRAINING WORKFLOW (RECOMMENDED)
+
+There are 2 different strategies and they solve different problems:
+
+Strategy A — Use RAG for up-to-date, changing knowledge
+- Best when you need the assistant to reference your project files, docs, notes.
+- Workflow:
+  1) Index project folder in Dev → RAG Indexer
+  2) Ask questions; the app injects retrieved “Background info” into the prompt
+
+Strategy B — Use LoRA fine-tuning for stable behavioral changes
+- Best when you want consistent style, rules, and response patterns.
+- Workflow:
+  1) Prepare dataset (SQLite or JSONL)
+  2) Start Training in Dev → Fine-tune
+  3) Fuse adapter if needed, then load the new merged model from Dev → Model
+
+Common best practice:
+- RAG for “facts/knowledge”
+- LoRA for “behavior/style/policy”
+
+
+5) DEPENDENCIES (WHAT MUST BE INSTALLED)
+
+Core:
+- PyQt5
+- mlx_lm (MLX inference + LoRA CLI)
+
+RAG:
+- sentence-transformers (embeddings)
+- faiss (vector index)
+- Optional:
+  - pymupdf (fitz) for PDF
+  - python-docx for DOCX
+  - zim for ZIM
+
+
+6) TROUBLESHOOTING (FAST CHECKLIST)
+
+6.1 Thought box not capturing reasoning
+Symptoms:
+- You see “thinking phase” text inside the final answer, not inside the collapsible Thought box.
+
+Cause:
+- Model output is not using <think>...</think> or <analysis>...</analysis>.
+
+Fix:
+- Ensure your system prompt enforces <think> formatting.
+- Restart the app after changing prompts so the new system prompt loads.
+
+
+6.2 RAG indexing fails
+Common causes:
+- Missing dependencies (faiss, sentence-transformers)
+- Unsupported file type libraries missing (PDF/DOCX/ZIM)
+- Folder path invalid
+
+Fix:
+- Install missing libs.
+- Test indexing a small folder with a few .txt/.py files first.
+
+
+6.3 Fine-tune won’t start
+Common causes:
+- mlx_lm not installed or not available in the selected Python environment
+- Model path invalid
+- Dataset invalid JSONL (should be auto-normalized, but verify it produced train.jsonl/valid.jsonl)
+
+Fix:
+- Verify “python -m mlx_lm --help” works in the same venv.
+- Use a minimal dataset first (small JSONL).
+
+
+6.4 Stop button doesn’t stop training
+Expected behavior:
+- Stop sends terminate() to the training subprocess.
+
+If it still runs:
+- Some subprocesses may ignore terminate; you may need to close the app or kill the process manually.
+
+
+7) QUICK “WHAT DOES WHAT” SUMMARY
+
+- Chat: conversation UI + streaming responses.
+- Dev Mode (right sidebar): power tools (RAG indexing, Fine-tune, Model selection, Testing).
+- RAG Indexer: builds/searches a local knowledge base from your files/docs.
+- Fine-tune (LoRA): trains adapters to change behavior/style of the base model.
+- Model tab: selects which model is used for inference.
+- Testing: regression/stress tools.
+- Unrestricted: switches to a less constrained system prompt.
