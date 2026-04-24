@@ -1032,6 +1032,17 @@ class DevPanelDialog(QDialog):
         if not os.path.isdir(model_path):
             QMessageBox.warning(self, "Invalid Model", "Model path is not valid.")
             return
+        if getattr(self.main_app, "model", None) is not None:
+            res = QMessageBox.question(
+                self,
+                "Training Warning",
+                "Training starts a separate process that loads the full model again.\n\n"
+                "If the model is currently loaded in the app, you may run out of RAM.\n\n"
+                "Continue anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if res != QMessageBox.Yes:
+                return
 
         try:
             data_dir = self._prepare_finetune_data_dir()
@@ -1163,6 +1174,21 @@ class DevPanelDialog(QDialog):
                 train = os.path.join(p, "train.jsonl")
                 valid = os.path.join(p, "valid.jsonl")
                 if os.path.exists(train) and os.path.exists(valid):
+                    try:
+                        for fp in (train, valid):
+                            with open(fp, "r", encoding="utf-8") as f:
+                                for _i, ln in zip(range(5), f):
+                                    if ln.strip():
+                                        json.loads(ln)
+                    except Exception:
+                        lines = []
+                        for fp in (train, valid):
+                            with open(fp, "r", encoding="utf-8") as f:
+                                lines += [ln for ln in f.read().splitlines() if ln.strip()]
+                        out_dir = os.path.join(base, "jsonl_export")
+                        os.makedirs(out_dir, exist_ok=True)
+                        self._write_train_valid_jsonl(out_dir, lines)
+                        return out_dir
                     return p
                 all_jsonl = sorted(glob.glob(os.path.join(p, "*.jsonl")))
                 if not all_jsonl:
@@ -1191,16 +1217,32 @@ class DevPanelDialog(QDialog):
         raise RuntimeError("Select a dataset source (SQLite or JSONL).")
 
     def _write_train_valid_jsonl(self, out_dir: str, lines: list[str]) -> None:
+        def normalize_jsonl_line(ln: str) -> str:
+            s = (ln or "").strip()
+            if not s:
+                return ""
+            if s.startswith("{") and s.endswith("}"):
+                try:
+                    json.loads(s)
+                    return s
+                except Exception:
+                    pass
+            return json.dumps({"text": s}, ensure_ascii=False)
+
         n = len(lines)
         split = max(1, int(n * 0.9))
         train_lines = lines[:split]
         valid_lines = lines[split:] or lines[:1]
         with open(os.path.join(out_dir, "train.jsonl"), "w", encoding="utf-8") as ft:
             for ln in train_lines:
-                ft.write(ln.rstrip("\n") + "\n")
+                out = normalize_jsonl_line(ln)
+                if out:
+                    ft.write(out + "\n")
         with open(os.path.join(out_dir, "valid.jsonl"), "w", encoding="utf-8") as fv:
             for ln in valid_lines:
-                fv.write(ln.rstrip("\n") + "\n")
+                out = normalize_jsonl_line(ln)
+                if out:
+                    fv.write(out + "\n")
     
     def build_model_tab(self):
         widget = QWidget()
@@ -2492,7 +2534,7 @@ class ChatbotGUI(QWidget):
 
         self.dev_mode_active = True
         self.dev_toggle_btn.setVisible(True)
-        self.toggle_dev_dialog(force_state=True)
+        self.toggle_dev_dialog(force_state=False)
 
     def toggle_dev_dialog(self, force_state=None) -> None:
         if not self.dev_mode_active:
@@ -2714,11 +2756,9 @@ class ChatbotGUI(QWidget):
             "chip": "#1a1a1a",
         }
         if self.theme == "light":
-            user_bubble = "rgba(106, 61, 255, 0.12)"
-            ai_bubble = colors["panel"]
+            user_bubble = "rgba(0, 0, 0, 0.06)"
         else:
-            user_bubble = "rgba(124, 77, 255, 0.22)"
-            ai_bubble = colors["panel2"]
+            user_bubble = colors["panel2"]
 
         base_css = (
             "<style>"
@@ -2727,9 +2767,11 @@ class ChatbotGUI(QWidget):
             ".row{display:flex; margin:10px 0;}"
             ".row.user{justify-content:flex-end;}"
             ".row.ai{justify-content:flex-start;}"
-            ".bubble{max-width:820px; border:1px solid " + colors["border"] + "; border-radius:14px; padding:12px 14px;}"
+            ".bubble{max-width:820px; border-radius:20px; padding:18px 22px;}"
             ".bubble.user{background:" + user_bubble + ";}"
-            ".bubble.ai{background:" + ai_bubble + ";}"
+            ".aiwrap{max-width:820px; padding:12px 8px;}"
+            ".thought{color:" + colors["muted"] + "; font-size:12px; font-weight:700; margin-bottom:8px;}"
+            ".aitext{color:" + colors["text"] + "; font-size:18px; line-height:1.7;}"
             ".menu{margin-left:10px; color:" + colors["muted"] + "; text-decoration:none; font-size:14px; font-weight:800;}"
             "</style>"
         )
@@ -2750,29 +2792,19 @@ class ChatbotGUI(QWidget):
                 answer = m.get("answer", m.get("content", ""))
                 thought_s = m.get("thought_s")
                 answer_html = self._html_escape(answer).replace("\n", "<br>")
-                block = ["<div class='row ai'>"]
+                block = ["<div class='row ai'>", "<div class='aiwrap'>"]
                 if isinstance(thought_s, (int, float)):
-                    block.append(
-                        "<div style='display:flex; flex-direction:column; gap:6px;'>"
-                        "<div style='color:" + colors["muted"] + "; font-size:12px; font-weight:700;'>"
-                        f"Thought for {float(thought_s):.2f} seconds"
-                        "</div>"
-                    )
-                    block.append("<div class='bubble ai'>")
-                else:
-                    block.append("<div class='bubble ai'>")
-                block.append(answer_html)
-                block.append("</div>")
+                    block.append(f"<div class='thought'>Thought for {float(thought_s):.2f} seconds</div>")
+                block.append(f"<div class='aitext'>{answer_html}</div>")
 
                 meta = m.get("meta")
                 if isinstance(meta, dict):
                     block.append(
-                        "<div style='color:" + colors["muted"] + ";font-size:11px;margin-top:8px; margin-left:10px;'>"
+                        "<div style='color:" + colors["muted"] + ";font-size:11px;margin-top:10px;'>"
                         f"{meta.get('tps', 0.0):.2f} tokens/sec | {meta.get('tokens', 0)} tokens | {meta.get('elapsed', 0.0):.2f}s elapsed"
                         "</div>"
                     )
-                if isinstance(thought_s, (int, float)):
-                    block.append("</div>")
+                block.append("</div>")
                 block.append("</div>")
                 parts.append("".join(block))
 
