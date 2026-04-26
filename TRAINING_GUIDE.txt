@@ -2,6 +2,48 @@ LOKUM AI — TRAINING + DEV PANEL GUIDE
 
 This document explains what each major feature does, how to use it, and how the Developer Panel (Dev Mode) connects RAG and LoRA fine-tuning to the app.
 
+0) 2AM QUICK START (DO THIS IN ORDER)
+
+Goal: get RAG + LoRA working with minimum thinking.
+
+A) Start the app
+1) Run:
+   python3 main.py
+2) Wait for “Service: ready”.
+
+B) Open Dev Mode (right sidebar)
+1) Click “Dev Mode” (left sidebar).
+2) Enter the developer password.
+3) Click “Dev Mode” again anytime to show/hide the right Dev sidebar.
+
+C) RAG in 60 seconds
+1) Dev sidebar → “RAG Indexer”
+2) Project Folder Indexing → Browse → pick a small folder first (few .py/.txt)
+3) Click “Index Project Files”
+4) Ask a question about a unique string inside those files.
+
+If indexing fails:
+- sentence-transformers + faiss must be installed.
+- PDF/DOCX/ZIM require extra optional libraries.
+
+D) Fine-tune (LoRA) in 60 seconds
+1) Dev sidebar → “Fine-tune”
+2) Pick dataset source:
+   - JSONL: choose a JSONL file OR a folder with train.jsonl + valid.jsonl
+   - SQLite: uses dataset.db (table: dataset(instruction, output))
+3) Click “Start Training” and watch logs.
+4) Click “Stop” to terminate training.
+
+If training fails:
+- mlx_lm must be installed in the same Python environment as the app.
+- the base model path must be valid.
+
+E) File locations you should know
+- Chat history DB (app uses this): app.db
+- Fine-tune dataset DB (only if you choose SQLite dataset): dataset.db
+- LoRA working folder (exports + configs): lora_data/
+- RAG index files: faiss_index.bin + docs_metadata.npy
+
 
 1) APP OVERVIEW (WHAT YOU HAVE)
 
@@ -48,9 +90,9 @@ Dev Mode is a right-side panel inside the main window.
 - Sidebar widths are managed by splitters and are restored to prevent size-jumping.
 
 3.2 How to open Dev Mode
-1) Click the Dev button in the left sidebar.
+1) Click “Dev Mode” in the left sidebar.
 2) Enter the developer password.
-3) Dev toggle becomes available; use it to show/hide the right sidebar panel.
+3) After unlock, click “Dev Mode” again to show/hide the right sidebar panel.
 
 3.3 Dev Mode tabs (what each does)
 
@@ -82,6 +124,10 @@ Using RAG in chat:
 - When RAG is enabled and index has content, the app retrieves relevant chunks.
 - It injects those chunks into the prompt as “Background info: ...” before generation.
 
+How to confirm RAG is actually enabled:
+- If sentence-transformers is missing, RAG is disabled internally and indexing will not work.
+- In that case, install dependencies and restart the app.
+
 Limitations:
 - The main chat UI currently does not show “which chunks were retrieved” as a separate sources panel.
 - If embeddings/FAISS dependencies are missing, indexing will fail.
@@ -111,6 +157,10 @@ Dataset safety / normalization:
 Outputs:
 - A LoRA adapter folder/path (adapter weights).
 - You can later fuse adapter + base model into a new merged model using mlx_lm fuse.
+
+Note about databases:
+- app.db stores chat history and is unrelated to training data.
+- dataset.db is only used if you choose the “SQLite dataset” option in the Fine-tune tab.
 
 Important RAM note:
 - Training loads the model again (in the MLX training subprocess).
@@ -194,6 +244,11 @@ Cause:
 Fix:
 - Ensure your system prompt enforces <think> formatting.
 - Restart the app after changing prompts so the new system prompt loads.
+- If the model still ignores tags, the app will try to split “reasoning-looking” text into the Thought box after generation finishes (best-effort).
+
+6.1b Dev sidebar does not appear
+- Click “Dev Mode” and enter the password once.
+- Click “Dev Mode” again to toggle the right sidebar on/off.
 
 
 6.2 RAG indexing fails

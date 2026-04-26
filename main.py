@@ -1661,6 +1661,9 @@ class ChatbotGUI(QWidget):
 
         self.init_ui()
 
+        self._init_chat_db()
+        self._load_chats_from_db()
+
         # Start HW Monitor
         self.mem_thread = MemoryMonitor()
         self.mem_thread.update_signal.connect(self.update_hw_stats)
@@ -1668,6 +1671,204 @@ class ChatbotGUI(QWidget):
 
         self.start_ai_service()
         self._restore_dev_dialog_state()
+
+    def _db_path(self) -> str:
+        return os.path.abspath("app.db")
+
+    def _init_chat_db(self) -> None:
+        conn = sqlite3.connect(self._db_path())
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS chats ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "name TEXT NOT NULL UNIQUE, "
+                "created_at REAL NOT NULL"
+                ")"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS messages ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "chat_id INTEGER NOT NULL, "
+                "role TEXT NOT NULL, "
+                "content TEXT NOT NULL, "
+                "think TEXT, "
+                "thought_s REAL, "
+                "meta TEXT, "
+                "created_at REAL NOT NULL, "
+                "FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE"
+                ")"
+            )
+            cur.execute("PRAGMA table_info(messages)")
+            cols = {r[1] for r in cur.fetchall() if r and len(r) > 1}
+            if "think" not in cols:
+                cur.execute("ALTER TABLE messages ADD COLUMN think TEXT")
+            if "thought_s" not in cols:
+                cur.execute("ALTER TABLE messages ADD COLUMN thought_s REAL")
+            if "meta" not in cols:
+                cur.execute("ALTER TABLE messages ADD COLUMN meta TEXT")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _ensure_chat_row(self, conn: sqlite3.Connection, name: str) -> int:
+        nm = (name or "").strip()
+        if not nm:
+            nm = "Default Chat"
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM chats WHERE name = ?", (nm,))
+        row = cur.fetchone()
+        if row:
+            return int(row[0])
+        cur.execute("INSERT INTO chats(name, created_at) VALUES(?, ?)", (nm, float(time.time())))
+        conn.commit()
+        return int(cur.lastrowid)
+
+    def _load_chats_from_db(self) -> None:
+        conn = sqlite3.connect(self._db_path())
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM chats ORDER BY created_at ASC, id ASC")
+            names = [r[0] for r in cur.fetchall() if r and r[0]]
+            if not names:
+                self._ensure_chat_row(conn, "Default Chat")
+                names = ["Default Chat"]
+
+            loaded_chats = {}
+            loaded_ui = {}
+            for nm in names:
+                chat_id = self._ensure_chat_row(conn, nm)
+                cur.execute(
+                    "SELECT role, content, think, thought_s, meta FROM messages WHERE chat_id = ? ORDER BY created_at ASC, id ASC",
+                    (int(chat_id),),
+                )
+                rows = cur.fetchall()
+                hist = [{"role": "system", "content": self.system_prompt}]
+                ui = []
+                for role, content, think, thought_s, meta in rows:
+                    role = (role or "").strip()
+                    content = content or ""
+                    if role == "user":
+                        hist.append({"role": "user", "content": content})
+                        ui.append({"role": "user", "content": content})
+                    elif role == "assistant":
+                        hist.append({"role": "assistant", "content": content})
+                        meta_obj = None
+                        if meta:
+                            try:
+                                meta_obj = json.loads(meta)
+                            except Exception:
+                                meta_obj = None
+                        ui.append(
+                            {
+                                "role": "assistant",
+                                "answer": content,
+                                "think": (think or ""),
+                                "think_open": False,
+                                "thought_s": float(thought_s) if isinstance(thought_s, (int, float)) else None,
+                                "meta": meta_obj,
+                            }
+                        )
+                loaded_chats[nm] = hist
+                loaded_ui[nm] = ui
+
+            self.chats = loaded_chats
+            self.chat_ui = loaded_ui
+            if self.active_chat not in self.chats:
+                self.active_chat = names[0]
+        finally:
+            conn.close()
+        self._rebuild_chat_list()
+        self.render_chat(self.active_chat)
+
+    def _persist_message(self, chat_name: str, role: str, content: str, think: str = "", thought_s=None, meta=None) -> None:
+        conn = sqlite3.connect(self._db_path())
+        try:
+            chat_id = self._ensure_chat_row(conn, chat_name)
+            meta_s = ""
+            if isinstance(meta, dict):
+                try:
+                    meta_s = json.dumps(meta, ensure_ascii=False)
+                except Exception:
+                    meta_s = ""
+            conn.execute(
+                "INSERT INTO messages(chat_id, role, content, think, thought_s, meta, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (int(chat_id), (role or "").strip(), content or "", think or "", float(thought_s) if isinstance(thought_s, (int, float)) else None, meta_s, float(time.time())),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _rename_chat_db(self, old_name: str, new_name: str) -> None:
+        conn = sqlite3.connect(self._db_path())
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE chats SET name = ? WHERE name = ?", ((new_name or "").strip(), (old_name or "").strip()))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _delete_chat_db(self, name: str) -> None:
+        conn = sqlite3.connect(self._db_path())
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM chats WHERE name = ?", ((name or "").strip(),))
+            row = cur.fetchone()
+            if not row:
+                return
+            chat_id = int(row[0])
+            cur.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+            cur.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _replace_user_message_db(self, chat_name: str, msg_index: int, new_content: str) -> None:
+        conn = sqlite3.connect(self._db_path())
+        try:
+            chat_id = self._ensure_chat_row(conn, chat_name)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id FROM messages WHERE chat_id = ? AND role = 'user' ORDER BY created_at ASC, id ASC",
+                (int(chat_id),),
+            )
+            ids = [int(r[0]) for r in cur.fetchall() if r and r[0] is not None]
+            user_msgs = [m for m in (self.chat_ui.get(chat_name, []) or []) if m.get("role") == "user"]
+            if not (0 <= msg_index < len(self.chat_ui.get(chat_name, []) or [])):
+                return
+            if self.chat_ui[chat_name][msg_index].get("role") != "user":
+                return
+            user_pos = sum(1 for m in self.chat_ui[chat_name][:msg_index] if m.get("role") == "user")
+            if user_pos >= len(ids):
+                return
+            msg_id = ids[user_pos]
+            cur.execute("UPDATE messages SET content = ? WHERE id = ?", (new_content or "", int(msg_id)))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _delete_user_message_db(self, chat_name: str, msg_index: int) -> None:
+        conn = sqlite3.connect(self._db_path())
+        try:
+            chat_id = self._ensure_chat_row(conn, chat_name)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id FROM messages WHERE chat_id = ? AND role = 'user' ORDER BY created_at ASC, id ASC",
+                (int(chat_id),),
+            )
+            ids = [int(r[0]) for r in cur.fetchall() if r and r[0] is not None]
+            if not (0 <= msg_index < len(self.chat_ui.get(chat_name, []) or [])):
+                return
+            if self.chat_ui[chat_name][msg_index].get("role") != "user":
+                return
+            user_pos = sum(1 for m in self.chat_ui[chat_name][:msg_index] if m.get("role") == "user")
+            if user_pos >= len(ids):
+                return
+            msg_id = ids[user_pos]
+            cur.execute("DELETE FROM messages WHERE id = ?", (int(msg_id),))
+            conn.commit()
+        finally:
+            conn.close()
 
     def _restore_dev_dialog_state(self):
         visible = self._settings.value("dev_dialog/visible", False, type=bool)
@@ -1839,7 +2040,7 @@ class ChatbotGUI(QWidget):
         
         dev_btn = QPushButton("Dev Mode")
         dev_btn.setObjectName("DevUnlockButton")
-        dev_btn.clicked.connect(self.open_dev_panel)
+        dev_btn.clicked.connect(self.on_dev_button_clicked)
         s_layout.addWidget(dev_btn)
 
         # ---------------- RIGHT MAIN AREA ----------------
@@ -1984,13 +2185,38 @@ class ChatbotGUI(QWidget):
         for name in self.chats.keys():
             self._add_chat_list_item(name)
 
-        items = self.chat_list.findItems(self.active_chat, Qt.MatchExactly)
-        if items:
-            self.chat_list.setCurrentItem(items[0])
+        it = self._find_chat_list_item(self.active_chat)
+        if it is not None:
+            self.chat_list.setCurrentItem(it)
         self._refresh_chat_list_row_visuals()
 
+    def _chat_name_from_item(self, item: QListWidgetItem) -> str:
+        if item is None:
+            return ""
+        try:
+            v = item.data(Qt.UserRole)
+            if isinstance(v, str) and v:
+                return v
+        except Exception:
+            pass
+        try:
+            return item.text()
+        except Exception:
+            return ""
+
+    def _find_chat_list_item(self, chat_name: str):
+        target = (chat_name or "").strip()
+        if not target:
+            return None
+        for i in range(self.chat_list.count()):
+            it = self.chat_list.item(i)
+            if self._chat_name_from_item(it) == target:
+                return it
+        return None
+
     def _add_chat_list_item(self, chat_name: str):
-        item = QListWidgetItem(chat_name)
+        item = QListWidgetItem("")
+        item.setData(Qt.UserRole, chat_name)
         item.setSizeHint(QSize(220, 52))
         self.chat_list.addItem(item)
 
@@ -2074,6 +2300,10 @@ class ChatbotGUI(QWidget):
             return
         self.chats.pop(chat_name, None)
         self.chat_ui.pop(chat_name, None)
+        try:
+            self._delete_chat_db(chat_name)
+        except Exception:
+            pass
         if self.active_chat == chat_name:
             self.active_chat = "Default Chat"
         self._rebuild_chat_list()
@@ -2535,6 +2765,9 @@ class ChatbotGUI(QWidget):
             self.apply_theme(getattr(diag, "final_theme", self.theme))
 
     def open_dev_panel(self):
+        self.on_dev_button_clicked()
+
+    def on_dev_button_clicked(self):
         if not dev_mode_gate.unlocked:
             password, ok = QInputDialog.getText(self, "Dev Mode", "Enter developer password:")
             if not ok or not password:
@@ -2545,7 +2778,7 @@ class ChatbotGUI(QWidget):
 
         self.dev_mode_active = True
         self.dev_toggle_btn.setVisible(True)
-        self.toggle_dev_dialog(force_state=False)
+        self.toggle_dev_dialog(force_state=None)
 
     def toggle_dev_dialog(self, force_state=None) -> None:
         if not self.dev_mode_active:
@@ -2630,14 +2863,22 @@ class ChatbotGUI(QWidget):
         self.chats[title] = [{"role": "system", "content": self.system_prompt}]
         self.chat_ui[title] = []
         self.active_chat = title
+        try:
+            conn = sqlite3.connect(self._db_path())
+            try:
+                self._ensure_chat_row(conn, title)
+            finally:
+                conn.close()
+        except Exception:
+            pass
         self._rebuild_chat_list()
-        items = self.chat_list.findItems(title, Qt.MatchExactly)
-        if items:
-            self.chat_list.setCurrentItem(items[0])
+        it = self._find_chat_list_item(title)
+        if it is not None:
+            self.chat_list.setCurrentItem(it)
         self.render_chat(self.active_chat)
 
     def switch_chat(self, item):
-        self.active_chat = item.text()
+        self.active_chat = self._chat_name_from_item(item)
         if self.active_chat not in self.chat_ui or not self.chat_ui[self.active_chat]:
             self.chat_ui.setdefault(self.active_chat, [])
             for msg in self.chats.get(self.active_chat, []):
@@ -2645,7 +2886,16 @@ class ChatbotGUI(QWidget):
                     if msg["role"] == "user":
                         self.chat_ui[self.active_chat].append({"role": "user", "content": msg.get("content", "")})
                     else:
-                        self.chat_ui[self.active_chat].append({"role": "assistant", "answer": msg.get("content", ""), "thought_s": None, "meta": None})
+                        self.chat_ui[self.active_chat].append(
+                            {
+                                "role": "assistant",
+                                "answer": msg.get("content", ""),
+                                "think": "",
+                                "think_open": False,
+                                "thought_s": None,
+                                "meta": None,
+                            }
+                        )
 
         self.render_chat(self.active_chat)
 
@@ -2661,12 +2911,12 @@ class ChatbotGUI(QWidget):
             return
         self.chats[new_name] = self.chats.pop(old_name)
         self.chat_ui[new_name] = self.chat_ui.pop(old_name, [])
-        for i in range(self.chat_list.count()):
-            it = self.chat_list.item(i)
-            if it.text() == old_name:
-                it.setText(new_name)
-                break
+        try:
+            self._rename_chat_db(old_name, new_name)
+        except Exception:
+            pass
         self.active_chat = new_name
+        self._rebuild_chat_list()
         self.render_chat(self.active_chat)
 
     def _is_placeholder_chat_name(self, name: str) -> bool:
@@ -2746,6 +2996,10 @@ class ChatbotGUI(QWidget):
         if not new_text:
             return
         msg["content"] = new_text
+        try:
+            self._replace_user_message_db(self.active_chat, msg_index, new_text)
+        except Exception:
+            pass
         self._sync_chat_history_from_ui(self.active_chat)
         self.render_chat(self.active_chat)
 
@@ -2756,6 +3010,10 @@ class ChatbotGUI(QWidget):
         res = QMessageBox.question(self, "Delete Message", "Delete this message? This cannot be undone.", QMessageBox.Yes | QMessageBox.No)
         if res != QMessageBox.Yes:
             return
+        try:
+            self._delete_user_message_db(self.active_chat, msg_index)
+        except Exception:
+            pass
         msgs.pop(msg_index)
         self._sync_chat_history_from_ui(self.active_chat)
         self.render_chat(self.active_chat)
@@ -2885,13 +3143,27 @@ class ChatbotGUI(QWidget):
         self.input_field.clear()
 
         self.chat_ui.setdefault(self.active_chat, [])
+        if self.active_chat not in self.chats:
+            self.chats[self.active_chat] = [{"role": "system", "content": self.system_prompt}]
+            self._rebuild_chat_list()
         is_first_user_msg = not any(m.get("role") == "user" for m in self.chat_ui[self.active_chat])
         if is_first_user_msg and self._is_placeholder_chat_name(self.active_chat):
             self._auto_name_active_chat(user_text)
 
         # History appends
+        self.chats.setdefault(self.active_chat, [{"role": "system", "content": self.system_prompt}])
+        self.chat_ui.setdefault(self.active_chat, [])
         self.chats[self.active_chat].append({"role": "user", "content": user_text})
         self.chat_ui[self.active_chat].append({"role": "user", "content": user_text})
+        try:
+            conn = sqlite3.connect(self._db_path())
+            try:
+                self._ensure_chat_row(conn, self.active_chat)
+            finally:
+                conn.close()
+            self._persist_message(self.active_chat, "user", user_text)
+        except Exception:
+            pass
         self.render_chat(self.active_chat)
         
         # Context formulation
@@ -3077,6 +3349,45 @@ class ChatbotGUI(QWidget):
         self._stream_buffer = ""
         return "", tail
 
+    def _extract_think_answer_from_text(self, text: str) -> tuple[str, str]:
+        import re
+
+        raw = text or ""
+
+        m = re.search(r"<\s*(think|analysis|thinking)\s*>", raw, flags=re.IGNORECASE)
+        if m:
+            start = m.end()
+            m2 = re.search(r"</\s*(think|analysis|thinking)\s*>", raw[start:], flags=re.IGNORECASE)
+            if m2:
+                end = start + m2.start()
+                think = raw[start:end]
+                rest = raw[start + m2.end():]
+                prefix = raw[:m.start()]
+                answer = (prefix + rest)
+                return (think or "").strip(), (answer or "").strip()
+
+        m3 = re.search(r"(?im)^\s*(final answer|final|answer)\s*:\s*", raw)
+        if m3:
+            think = raw[:m3.start()]
+            answer = raw[m3.end():]
+            return (think or "").strip(), (answer or "").strip()
+
+        parts = re.split(r"\n\s*\n", raw, maxsplit=1)
+        if len(parts) == 2:
+            first, rest = parts
+            first_s = (first or "").strip()
+            if len(first_s) >= 160:
+                low = first_s.lower()
+                cues = [
+                    "the user", "let me think", "i should", "i will", "i'll",
+                    "reason", "thinking", "plan", "approach", "step 1", "1.",
+                    "2.", "3.",
+                ]
+                if any(c in low for c in cues):
+                    return first_s, (rest or "").strip()
+
+        return "", (raw or "").strip()
+
     def on_new_token(self, token):
         think_delta, answer_delta = self._split_stream_delta(token)
 
@@ -3103,22 +3414,47 @@ class ChatbotGUI(QWidget):
             self._render_timer.start(40)
 
     def on_ai_success(self, response, tps, tokens, ms, peak_memory_gb):
-        if self._pending_chat is not None and self._pending_msg_index is not None:
-            assistant_answer = self.chat_ui[self._pending_chat][self._pending_msg_index].get("answer", "")
-            self.chats[self._pending_chat].append({"role": "assistant", "content": assistant_answer})
-        else:
-            self.chats[self.active_chat].append({"role": "assistant", "content": ""})
+        pending_chat = self._pending_chat
+        pending_idx = self._pending_msg_index
         if isinstance(peak_memory_gb, (int, float)) and peak_memory_gb > 0:
             self._model_peak_memory_gb = float(peak_memory_gb)
 
         _, tail = self._finalize_stream_tail()
-        if tail and self._pending_chat is not None and self._pending_msg_index is not None:
-            self.chat_ui[self._pending_chat][self._pending_msg_index]["answer"] += tail
+        if tail and pending_chat is not None and pending_idx is not None:
+            self.chat_ui[pending_chat][pending_idx]["answer"] += tail
+
+        assistant_answer = ""
+        if pending_chat is not None and pending_idx is not None:
+            msg = self.chat_ui[pending_chat][pending_idx]
+            merged_think = (msg.get("think", "") or "").strip()
+            extracted_think, extracted_answer = self._extract_think_answer_from_text(msg.get("answer", ""))
+            if extracted_think:
+                if merged_think:
+                    merged_think = (merged_think + "\n" + extracted_think).strip()
+                else:
+                    merged_think = extracted_think.strip()
+                msg["think"] = merged_think
+                msg["answer"] = extracted_answer
+            assistant_answer = msg.get("answer", "") or ""
+            self.chats[pending_chat].append({"role": "assistant", "content": assistant_answer})
+        else:
+            self.chats[self.active_chat].append({"role": "assistant", "content": ""})
         
         # Display metadata
-        if self._pending_chat is not None and self._pending_msg_index is not None:
-            msg = self.chat_ui[self._pending_chat][self._pending_msg_index]
+        if pending_chat is not None and pending_idx is not None:
+            msg = self.chat_ui[pending_chat][pending_idx]
             msg["meta"] = {"tps": float(tps), "tokens": int(tokens), "elapsed": float(ms)}
+            try:
+                self._persist_message(
+                    pending_chat,
+                    "assistant",
+                    assistant_answer,
+                    think=(msg.get("think", "") or ""),
+                    thought_s=msg.get("thought_s"),
+                    meta=msg.get("meta") if isinstance(msg.get("meta"), dict) else None,
+                )
+            except Exception:
+                pass
 
         self._pending_chat = None
         self._pending_msg_index = None
