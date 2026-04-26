@@ -91,11 +91,20 @@ from mlx_lm import load, generate, stream_generate
 
 # RAG Engine: Handles document indexing and retrieval
 # Fine-tune Engine: Handles LoRA training
+RAGEngine = None
+FinetuneEngine = None
+RAG_IMPORT_ERROR = ""
+FINETUNE_IMPORT_ERROR = ""
 try:
-    from rag_engine import RAGEngine
-    from finetune_engine import FinetuneEngine
-except ImportError:
-    pass
+    from rag_engine import RAGEngine as _RAGEngine
+    RAGEngine = _RAGEngine
+except Exception as e:
+    RAG_IMPORT_ERROR = str(e)
+try:
+    from finetune_engine import FinetuneEngine as _FinetuneEngine
+    FinetuneEngine = _FinetuneEngine
+except Exception as e:
+    FINETUNE_IMPORT_ERROR = str(e)
 
 # Application version and dev mode password
 VERSION = "LokumAI"
@@ -896,6 +905,14 @@ class DevPanelDialog(QWidget):
         if not folder or not os.path.isdir(folder):
             QMessageBox.warning(self, "Invalid Folder", "Please select a valid folder path.")
             return
+
+        if not self.main_app or self.main_app.get_rag_engine() is None or not getattr(self.main_app.get_rag_engine(), "enabled", False):
+            msg = "RAG engine not available. Install dependencies:\n\npip install sentence-transformers faiss-cpu"
+            if RAG_IMPORT_ERROR:
+                msg += f"\n\nDetails: {RAG_IMPORT_ERROR}"
+            self.rag_status_lbl.setText("Disabled")
+            QMessageBox.warning(self, "RAG Unavailable", msg)
+            return
         
         self.rag_status_lbl.setText("Indexing…")
         if hasattr(self, "_rag_index_btn") and self._rag_index_btn is not None:
@@ -909,6 +926,15 @@ class DevPanelDialog(QWidget):
         if hasattr(self, "_rag_docs_btn") and self._rag_docs_btn is not None:
             self._rag_docs_btn.setEnabled(False)
         url = (self.docs_url.text() if hasattr(self, "docs_url") else "").strip()
+        if not self.main_app or self.main_app.get_rag_engine() is None or not getattr(self.main_app.get_rag_engine(), "enabled", False):
+            msg = "RAG engine not available. Install dependencies:\n\npip install sentence-transformers faiss-cpu"
+            if RAG_IMPORT_ERROR:
+                msg += f"\n\nDetails: {RAG_IMPORT_ERROR}"
+            self.rag_status_lbl.setText("Disabled")
+            if hasattr(self, "_rag_docs_btn") and self._rag_docs_btn is not None:
+                self._rag_docs_btn.setEnabled(True)
+            QMessageBox.warning(self, "RAG Unavailable", msg)
+            return
         self._docs_worker = PythonDocsIndexWorker(self.main_app, url)
         self._docs_worker.finished.connect(self._on_docs_index_finished)
         self._docs_worker.start()
@@ -1913,6 +1939,9 @@ class ChatbotGUI(QWidget):
     def get_rag_engine(self):
         if self.rag_engine is not None:
             return self.rag_engine
+        if RAGEngine is None:
+            self.rag_engine = None
+            return None
         try:
             self.rag_engine = RAGEngine()
         except Exception:
@@ -2213,6 +2242,14 @@ class ChatbotGUI(QWidget):
         self.apply_theme(self.prompts.get("theme", "dark"))
 
     def _rebuild_chat_list(self):
+        try:
+            for i in range(self.chat_list.count()):
+                it = self.chat_list.item(i)
+                w = self.chat_list.itemWidget(it)
+                if w is not None:
+                    w.deleteLater()
+        except Exception:
+            pass
         self.chat_list.clear()
         for name in self.chats.keys():
             self._add_chat_list_item(name)
@@ -2249,7 +2286,6 @@ class ChatbotGUI(QWidget):
     def _add_chat_list_item(self, chat_name: str):
         item = QListWidgetItem("")
         item.setData(Qt.UserRole, chat_name)
-        item.setSizeHint(QSize(220, 52))
         self.chat_list.addItem(item)
 
         w = QWidget()
@@ -2277,6 +2313,11 @@ class ChatbotGUI(QWidget):
 
         w.mousePressEvent = lambda _e, it=item: self.chat_list.setCurrentItem(it)
         self.chat_list.setItemWidget(item, w)
+        try:
+            h = max(52, int(w.sizeHint().height()))
+            item.setSizeHint(QSize(220, h))
+        except Exception:
+            item.setSizeHint(QSize(220, 52))
 
     def _refresh_chat_list_row_visuals(self) -> None:
         current = self.chat_list.currentItem()
@@ -2809,7 +2850,8 @@ class ChatbotGUI(QWidget):
                 return
 
         self.dev_mode_active = True
-        self.dev_toggle_btn.setVisible(True)
+        self.dev_toggle_btn.setVisible(False)
+        self.dev_toggle_btn.setEnabled(False)
         self.toggle_dev_dialog(force_state=None)
 
     def toggle_dev_dialog(self, force_state=None) -> None:
@@ -2933,7 +2975,7 @@ class ChatbotGUI(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._rebuild_chat_list()
+        self._refresh_chat_list_row_visuals()
 
     def _rename_chat(self, old_name: str, new_name: str):
         if new_name in self.chats and new_name != old_name:

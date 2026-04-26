@@ -24,8 +24,16 @@ USAGE:
 import os
 import glob
 import numpy as np
-import faiss
 from typing import List, Dict, Any, Optional
+
+# FAISS for vector similarity search
+try:
+    import faiss
+    HAS_FAISS = True
+except ImportError:
+    faiss = None
+    HAS_FAISS = False
+    print("Warning: faiss not installed. Run: pip install faiss-cpu")
 
 # Import sentence-transformers for creating embeddings
 # This model converts text into 384-dimensional vectors
@@ -80,7 +88,7 @@ class RAGEngine:
 
     def __init__(self):
         # Check if we have all required dependencies
-        self.enabled = HAS_SENTENCE_TRANSFORMERS
+        self.enabled = bool(HAS_SENTENCE_TRANSFORMERS and HAS_FAISS)
         if not self.enabled:
             return
 

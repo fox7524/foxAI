@@ -45,6 +45,128 @@ E) File locations you should know
 - RAG index files: faiss_index.bin + docs_metadata.npy
 
 
+8) FINE-TUNE (TRAINING) — STEP BY STEP (IN THE UI)
+
+This section is written to be followed at 2AM with minimal mistakes.
+
+8.1 Before you start (fast checklist)
+- You must have a base model loaded (Service: ready).
+- Training uses a subprocess and loads the model again → RAM usage can spike.
+- If training instantly fails, it’s usually one of:
+  - mlx_lm not installed in the same venv
+  - invalid model path
+  - invalid dataset format
+
+8.2 Open the training UI
+1) Click “Dev Mode” (left sidebar).
+2) Enter the developer password.
+3) In the right Dev sidebar, click the “Fine-tune” tab.
+
+8.3 Choose dataset source (IMPORTANT)
+
+Option A — JSONL (recommended for quick start)
+1) Select “JSONL” as the dataset source.
+2) In the JSONL path field:
+   - You can choose a file OR a folder.
+   - Folder mode works if it contains train.jsonl + valid.jsonl.
+3) Paste the path (or use the UI picker if present).
+
+What the app will accept:
+- Proper JSONL: each line is a valid JSON object.
+- Plain text lines: the app auto-converts each line into:
+  {"text": "..."}
+  and exports a safe dataset under lora_data/jsonl_export/.
+
+Option B — SQLite dataset (good if you want a simple internal DB)
+1) Select “SQLite” as the dataset source.
+2) The app reads: dataset.db
+3) Required schema:
+   - table name: dataset
+   - columns: instruction TEXT, output TEXT
+
+If dataset.db is empty, training will refuse to start.
+
+8.4 Configure training parameters (safe defaults)
+You will see parameters like:
+- Rank (LoRA rank)
+- Alpha (LoRA scaling)
+- Iters (training iterations)
+- Batch size
+
+Safe starting point:
+- Keep batch size small (RAM safety).
+- Keep iters low for first test run.
+Goal: “does it start and produce logs?” before long runs.
+
+8.5 Start training
+1) Click “Start Training”.
+2) Watch the log box:
+   - You should see the mlx_lm command launching and training progress logs.
+3) The progress bar may not reflect true progress perfectly; trust logs.
+
+8.6 Stop training
+1) Click “Stop”.
+2) The app sends terminate() to the subprocess.
+3) If it doesn’t stop immediately:
+   - wait a few seconds
+   - if still stuck, close the app and kill the python process
+
+8.7 After training: what you get
+- An adapter folder/path (LoRA weights).
+- The log usually prints where it saved the adapter.
+
+Optional: fuse adapter + base model
+- You can fuse later using mlx_lm fuse, producing a single merged model folder.
+
+
+9) TRAINING TROUBLESHOOTING (MOST COMMON FAILS)
+
+9.1 Training fails instantly / no logs
+Likely causes:
+- mlx_lm is not installed in the same Python environment as the app.
+- The model path is wrong or not an MLX model folder.
+
+Fix:
+- Verify mlx_lm works in your venv:
+  python -m mlx_lm --help
+- Re-check the model path in Dev → Model tab and reload the model.
+
+9.2 JSONL errors (dataset parsing crashes)
+Symptoms:
+- Logs mention JSON parsing errors.
+- Training exits quickly.
+
+Fix:
+- Re-select the JSONL file/folder and let the app export to lora_data/jsonl_export/.
+- Ensure each line is valid JSON or plain text (the app wraps plain text into {"text": ...}).
+
+9.3 Out of memory / RAM spikes / app becomes slow
+Cause:
+- Training loads a model again in a subprocess while the app is also holding a model in RAM.
+
+Fix:
+- Use smaller model or smaller batch size.
+- Close other apps.
+- Restart the app before training so memory is clean.
+
+9.4 Adapter saved but behavior didn’t change
+Cause:
+- Too few iters or low-quality dataset.
+
+Fix:
+- Increase iters gradually.
+- Improve dataset quality (clear instruction/response pairs).
+- Validate with a fixed set of prompts before/after.
+
+9.5 Stop button doesn’t stop training
+Cause:
+- Some subprocesses don’t terminate immediately.
+
+Fix:
+- Wait a few seconds.
+- If stuck, kill the process manually (Activity Monitor) or close the app.
+
+
 1) APP OVERVIEW (WHAT YOU HAVE)
 
 Lokum AI is a single-process local desktop app (PyQt). It runs:
