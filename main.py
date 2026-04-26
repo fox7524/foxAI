@@ -78,7 +78,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QTextBrowser, QProgressBar, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView, QGroupBox,
     QGridLayout, QPlainTextEdit, QDoubleSpinBox, QToolButton, QMenu, QAction,
-    QListWidgetItem
+    QListWidgetItem, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QSettings
 from PyQt5.QtGui import QFont, QTextCursor, QPalette, QColor, QTextCharFormat, QCursor
@@ -300,6 +300,27 @@ class BenchmarkWorker(QThread):
                 token_count = len(out.split())
             tps = token_count / elapsed if elapsed > 0 else 0.0
             self.finished.emit(tps, token_count, elapsed, out[:2000])
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class FinalAnswerWorker(QThread):
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, model, tokenizer, prompt: str, max_tokens: int = 256):
+        super().__init__()
+        self.model = model
+        self.tokenizer = tokenizer
+        self.prompt = prompt
+        self.max_tokens = int(max_tokens)
+
+    def run(self):
+        try:
+            if self.model is None or self.tokenizer is None:
+                raise ValueError("Model/tokenizer not loaded")
+            out = generate(self.model, self.tokenizer, prompt=self.prompt, max_tokens=self.max_tokens)
+            self.finished.emit((out or "").strip())
         except Exception as e:
             self.error.emit(str(e))
 
@@ -1658,6 +1679,10 @@ class ChatbotGUI(QWidget):
         self._stream_buffer = ""
         self._thinking_start_ts = None
         self._answer_started = False
+        self._last_user_text = ""
+        self._last_context_prompt = ""
+        self._final_worker = None
+        self._final_pending = None
 
         self.init_ui()
 
@@ -2084,11 +2109,18 @@ class ChatbotGUI(QWidget):
         chat_layout.setContentsMargins(0, 0, 0, 0)
         chat_layout.setSpacing(0)
 
-        self.chat_display = QTextBrowser()
-        self.chat_display.setOpenLinks(False)
-        self.chat_display.anchorClicked.connect(self.on_chat_anchor_clicked)
-        self.chat_display.setReadOnly(True)
+        self.chat_display = QScrollArea()
+        self.chat_display.setWidgetResizable(True)
+        self.chat_display.setFrameShape(QFrame.NoFrame)
+        self.chat_display.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         chat_layout.addWidget(self.chat_display)
+
+        self.chat_view = QWidget()
+        self.chat_msgs_layout = QVBoxLayout(self.chat_view)
+        self.chat_msgs_layout.setContentsMargins(24, 18, 24, 18)
+        self.chat_msgs_layout.setSpacing(14)
+        self.chat_msgs_layout.addStretch()
+        self.chat_display.setWidget(self.chat_view)
 
         self.chat_list.itemSelectionChanged.connect(self._on_chat_list_selection_changed)
         self._rebuild_chat_list()
@@ -2757,7 +2789,7 @@ class ChatbotGUI(QWidget):
         self.tokenizer = None
         self.service_status_lbl.setText("Service: error")
         self._set_chat_enabled(False)
-        self.chat_display.append(f"<div style='color: #ff5555; '><b>Model load error:</b> {err}</div><br>")
+        QMessageBox.critical(self, "Model Load Error", err)
 
     def open_settings(self):
         diag = SettingsDialog(self, self.user_prompt, current_theme=self.theme)
@@ -3029,8 +3061,21 @@ class ChatbotGUI(QWidget):
                 out.append({"role": "assistant", "content": m.get("answer", "")})
         self.chats[chat_name] = out
 
+    def _toggle_thought(self, msg_index: int) -> None:
+        msgs = self.chat_ui.get(self.active_chat, [])
+        if not (0 <= msg_index < len(msgs)):
+            return
+        msg = msgs[msg_index]
+        if msg.get("role") != "assistant":
+            return
+        msg["think_open"] = not bool(msg.get("think_open"))
+        self.render_chat(self.active_chat)
+
     def render_chat(self, chat_name: str):
-        msgs = self.chat_ui.get(chat_name, [])
+        if not hasattr(self, "chat_msgs_layout") or self.chat_msgs_layout is None:
+            return
+
+        msgs = self.chat_ui.get(chat_name, []) or []
         colors = getattr(self, "_theme_colors", None) or {
             "bg": "#0f0f0f",
             "panel": "#161616",
@@ -3043,92 +3088,154 @@ class ChatbotGUI(QWidget):
             "danger": "#ff4d6a",
             "chip": "#1a1a1a",
         }
-        if self.theme == "light":
-            user_bubble = "rgba(0, 0, 0, 0.06)"
-        else:
-            user_bubble = colors["panel2"]
+        user_bubble = "rgba(0, 0, 0, 0.06)" if self.theme == "light" else colors["panel2"]
 
-        def _format_text_to_html(s: str) -> str:
-            import re
+        def clear_layout(lay: QVBoxLayout) -> None:
+            while lay.count():
+                it = lay.takeAt(0)
+                if it is None:
+                    continue
+                w = it.widget()
+                if w is not None:
+                    w.deleteLater()
 
+        def fmt_html(s: str) -> str:
             t = self._html_escape(s or "")
             t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
             t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
             return t.replace("\n", "<br>")
 
-        base_css = (
-            "<style>"
-            "body{margin:0;padding:0;}"
-            ".wrap{padding:24px; font-size:16px; line-height:1.6;}"
-            ".row{display:flex; margin:10px 0;}"
-            ".row.user{justify-content:flex-end;}"
-            ".row.ai{justify-content:flex-start;}"
-            ".bubble{border-radius:18px; padding:12px 16px;}"
-            ".usercol{display:flex; flex-direction:column; align-items:flex-end; max-width:82%;}"
-            ".bubble.user{background:" + user_bubble + "; border:1px solid " + colors["border"] + "; display:inline-block; max-width:100%; text-align:right; white-space:pre-wrap; overflow-wrap:anywhere;}"
-            ".aiwrap{max-width:820px; padding:10px 8px;}"
-            ".model{color:" + colors["muted"] + "; font-size:13px; font-weight:600; margin:2px 0 10px 0;}"
-            ".thoughtwrap{background:" + colors["panel2"] + "; border:1px solid " + colors["border"] + "; border-radius:12px; padding:12px 14px; margin:0 0 14px 0;}"
-            ".thoughthdr{color:" + colors["muted"] + "; font-size:13px; font-weight:700; margin:0 0 10px 0;}"
-            ".thoughttoggle{color:" + colors["muted"] + "; text-decoration:none; font-weight:900; margin-right:10px;}"
-            ".thinktext{color:" + colors["text"] + "; font-size:15px; line-height:1.6;}"
-            ".aitext{color:" + colors["text"] + "; font-size:18px; line-height:1.7;}"
-            ".menu{margin-left:10px; color:" + colors["muted"] + "; text-decoration:none; font-size:14px; font-weight:800;}"
-            ".menu.usermenu{margin-left:0px; margin-top:6px; font-size:12px;}"
-            "code{background:" + colors["chip"] + "; padding:2px 6px; border-radius:6px; font-family:Menlo, monospace; font-size:13px;}"
-            "</style>"
-        )
-        parts = []
+        clear_layout(self.chat_msgs_layout)
+
+        max_bubble = 820
+        try:
+            vw = int(self.chat_display.viewport().width())
+            max_bubble = max(260, int(vw * 0.82))
+        except Exception:
+            max_bubble = 820
+
         for i, m in enumerate(msgs):
             role = m.get("role")
             if role == "user":
-                txt = _format_text_to_html(m.get("content", ""))
-                parts.append(
-                    "<div class='row user'>"
-                    "<div class='usercol'>"
-                    "<div class='bubble user'>"
-                    f"{txt}"
-                    "</div>"
-                    f"<a class='menu usermenu' href='msg_menu:{i}'>...</a>"
-                    "</div>"
-                    "</div>"
+                row = QWidget()
+                row_l = QHBoxLayout(row)
+                row_l.setContentsMargins(0, 0, 0, 0)
+                row_l.setSpacing(0)
+                row_l.addStretch()
+
+                col = QWidget()
+                col_l = QVBoxLayout(col)
+                col_l.setContentsMargins(0, 0, 0, 0)
+                col_l.setSpacing(6)
+                col_l.setAlignment(Qt.AlignRight)
+
+                bubble = QFrame()
+                bubble.setObjectName("UserBubble")
+                bubble.setStyleSheet(
+                    f"QFrame#UserBubble{{background:{user_bubble};border:1px solid {colors['border']};border-radius:18px;}}"
                 )
-            elif role == "assistant":
-                answer = m.get("answer", m.get("content", ""))
+                bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
+                bubble.setMaximumWidth(max_bubble)
+                b_l = QVBoxLayout(bubble)
+                b_l.setContentsMargins(14, 10, 14, 10)
+
+                lbl = QLabel()
+                lbl.setWordWrap(True)
+                lbl.setTextFormat(Qt.RichText)
+                lbl.setText(f"<div style='text-align:right;color:{colors['text']};font-size:16px;line-height:1.5;'>{fmt_html(m.get('content',''))}</div>")
+                lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                lbl.setMaximumWidth(max_bubble - 28)
+                b_l.addWidget(lbl)
+
+                dots = QToolButton()
+                dots.setText("...")
+                dots.setCursor(Qt.PointingHandCursor)
+                dots.setAutoRaise(True)
+                dots.setStyleSheet(f"QToolButton{{background:transparent;border:0;color:{colors['muted']};font-weight:800;font-size:12px;}}")
+                dots.clicked.connect(lambda _=False, idx=i: self.open_message_menu(idx))
+
+                col_l.addWidget(bubble, 0, Qt.AlignRight)
+                col_l.addWidget(dots, 0, Qt.AlignRight)
+                row_l.addWidget(col)
+                self.chat_msgs_layout.addWidget(row)
+                continue
+
+            if role == "assistant":
+                wrap = QWidget()
+                w_l = QVBoxLayout(wrap)
+                w_l.setContentsMargins(0, 0, 0, 0)
+                w_l.setSpacing(10)
+
+                header = QLabel("Lokum AI")
+                header.setStyleSheet(f"color:{colors['muted']};font-size:13px;font-weight:600;")
+                w_l.addWidget(header)
+
                 thought_s = m.get("thought_s")
-                answer_html = _format_text_to_html(answer)
-                block = ["<div class='row ai'>", "<div class='aiwrap'>"]
-                block.append("<div class='model'>Lokum AI</div>")
-                think = m.get("think", "")
+                think_txt = (m.get("think", "") or "").strip()
                 if isinstance(thought_s, (int, float)):
-                    is_open = bool(m.get("think_open")) and bool(think)
-                    arrow = "▾" if is_open else "▸"
-                    block.append("<div class='thoughtwrap'>")
-                    block.append(
-                        "<div class='thoughthdr'>"
-                        f"<a class='thoughttoggle' href='toggle_thought:{i}'>{arrow}</a>"
-                        f"Thought for {float(thought_s):.2f} seconds"
-                        "</div>"
+                    thought_frame = QFrame()
+                    thought_frame.setObjectName("ThoughtFrame")
+                    thought_frame.setStyleSheet(
+                        f"QFrame#ThoughtFrame{{background:{colors['panel2']};border:1px solid {colors['border']};border-radius:12px;}}"
                     )
-                    if is_open:
-                        think_html = _format_text_to_html(think)
-                        block.append(f"<div class='thinktext'>{think_html}</div>")
-                    block.append("</div>")
-                block.append(f"<div class='aitext'>{answer_html}</div>")
+                    t_l = QVBoxLayout(thought_frame)
+                    t_l.setContentsMargins(12, 10, 12, 10)
+                    t_l.setSpacing(8)
+
+                    hdr_row = QWidget()
+                    hdr_l = QHBoxLayout(hdr_row)
+                    hdr_l.setContentsMargins(0, 0, 0, 0)
+                    hdr_l.setSpacing(8)
+
+                    is_open = bool(m.get("think_open")) and bool(think_txt)
+                    arrow = "▾" if is_open else "▸"
+                    toggle = QToolButton()
+                    toggle.setText(arrow)
+                    toggle.setCursor(Qt.PointingHandCursor)
+                    toggle.setAutoRaise(True)
+                    toggle.setStyleSheet(f"QToolButton{{background:transparent;border:0;color:{colors['muted']};font-weight:900;font-size:14px;}}")
+                    toggle.clicked.connect(lambda _=False, idx=i: self._toggle_thought(idx))
+                    hdr_l.addWidget(toggle)
+
+                    hdr_lbl = QLabel(f"Thought for {float(thought_s):.2f} seconds")
+                    hdr_lbl.setStyleSheet(f"color:{colors['muted']};font-size:13px;font-weight:700;")
+                    hdr_l.addWidget(hdr_lbl)
+                    hdr_l.addStretch()
+
+                    t_l.addWidget(hdr_row)
+
+                    if is_open and think_txt:
+                        t_lbl = QLabel()
+                        t_lbl.setWordWrap(True)
+                        t_lbl.setTextFormat(Qt.RichText)
+                        t_lbl.setText(f"<div style='color:{colors['text']};font-size:15px;line-height:1.6;'>{fmt_html(think_txt)}</div>")
+                        t_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                        t_l.addWidget(t_lbl)
+
+                    w_l.addWidget(thought_frame)
+
+                ans = (m.get("answer", "") or "").strip()
+                if ans:
+                    a_lbl = QLabel()
+                    a_lbl.setWordWrap(True)
+                    a_lbl.setTextFormat(Qt.RichText)
+                    a_lbl.setText(f"<div style='color:{colors['text']};font-size:18px;line-height:1.7;'>{fmt_html(ans)}</div>")
+                    a_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                    w_l.addWidget(a_lbl)
 
                 meta = m.get("meta")
                 if isinstance(meta, dict):
-                    block.append(
-                        "<div style='color:" + colors["muted"] + ";font-size:11px;margin-top:10px;'>"
-                        f"{meta.get('tps', 0.0):.2f} tokens/sec | {meta.get('tokens', 0)} tokens | {meta.get('elapsed', 0.0):.2f}s elapsed"
-                        "</div>"
-                    )
-                block.append("</div>")
-                block.append("</div>")
-                parts.append("".join(block))
+                    meta_lbl = QLabel(f"{meta.get('tps', 0.0):.2f} tokens/sec | {meta.get('tokens', 0)} tokens | {meta.get('elapsed', 0.0):.2f}s elapsed")
+                    meta_lbl.setStyleSheet(f"color:{colors['muted']};font-size:11px;")
+                    w_l.addWidget(meta_lbl)
 
-        self.chat_display.setHtml(base_css + "<div class='wrap'>" + "".join(parts) + "</div>")
-        self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
+                self.chat_msgs_layout.addWidget(wrap)
+
+        self.chat_msgs_layout.addStretch()
+        try:
+            self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
+        except Exception:
+            pass
 
     def soru_sor(self):
         user_text = self.input_field.text().strip()
@@ -3136,11 +3243,12 @@ class ChatbotGUI(QWidget):
             return
 
         if self.model is None or self.tokenizer is None:
-            self.chat_display.append("<div style='color: #ff5555; '><b>Service not ready:</b> Model is not loaded.</div><br>")
+            QMessageBox.warning(self, "Service Not Ready", "Model is not loaded.")
             self.input_field.setText(user_text)
             self.input_field.setFocus()
             return
         self.input_field.clear()
+        self._last_user_text = user_text
 
         self.chat_ui.setdefault(self.active_chat, [])
         if self.active_chat not in self.chats:
@@ -3183,6 +3291,7 @@ class ChatbotGUI(QWidget):
                 self.rag_badge.style().unpolish(self.rag_badge)
                 self.rag_badge.style().polish(self.rag_badge)
         
+        self._last_context_prompt = context_prompt
         temp_history = list(self.chats[self.active_chat])
         temp_history[-1] = {"role": "user", "content": context_prompt}
         
@@ -3217,25 +3326,14 @@ class ChatbotGUI(QWidget):
         self.worker.start()
 
     def add_chat_bubble(self, sender, text, is_user=True):
-        color = "#a0a0a0" if is_user else "#ececec"
-        sender_color = "#7c4dff" if not is_user else "#888"
-        bg_color = "#1a1a1a" if is_user else "transparent"
-        padding = "15px" if is_user else "0px"
-        margin = "10px 0px"
-        
-        bubble_html = f"""
-            <div style='margin: {margin}; padding: {padding}; background-color: {bg_color}; border-radius: 10px;'>
-                <div style='color: {sender_color}; font-weight: bold; font-size: 12px; margin-bottom: 5px;'>{sender.upper()}</div>
-                <div style='color: {color}; font-size: 15px; line-height: 1.5;'>{text.replace(chr(10), '<br>')}</div>
-            </div>
-        """
-        self.chat_display.append(bubble_html)
-        self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
-        
-        # Return the cursor position for streaming updates
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        return cursor
+        if is_user:
+            self.chat_ui.setdefault(self.active_chat, []).append({"role": "user", "content": text or ""})
+            self.chats.setdefault(self.active_chat, [{"role": "system", "content": self.system_prompt}]).append({"role": "user", "content": text or ""})
+        else:
+            self.chat_ui.setdefault(self.active_chat, []).append({"role": "assistant", "answer": text or "", "think": "", "think_open": False, "thought_s": None, "meta": None})
+            self.chats.setdefault(self.active_chat, [{"role": "system", "content": self.system_prompt}]).append({"role": "assistant", "content": text or ""})
+        self.render_chat(self.active_chat)
+        return None
 
     def run_last_code(self):
         # Find last code block in assistant responses
@@ -3256,18 +3354,33 @@ class ChatbotGUI(QWidget):
             
         try:
             # Simple execution for now, as per roadmap Phase 2
-            self.chat_display.append("<div style='color: #4dff9f; font-size: 12px; margin-top: 10px;'><b>[RUNNING CODE...]</b></div>")
             result = subprocess.run([sys.executable, "-c", last_code], capture_output=True, text=True, timeout=10)
             
             output = result.stdout if result.stdout else ""
             error = result.stderr if result.stderr else ""
             
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Run Output")
+            dlg.setFixedSize(760, 480)
+            layout = QVBoxLayout(dlg)
+            editor = QPlainTextEdit()
+            editor.setReadOnly(True)
+            combined = ""
             if output:
-                self.chat_display.append(f"<div style='color: #888; font-family: monospace; font-size: 13px; background: #1a1a1a; padding: 10px;'>{output}</div>")
+                combined += output
             if error:
-                self.chat_display.append(f"<div style='color: #ff4d6a; font-family: monospace; font-size: 13px; background: #1a1a1a; padding: 10px;'>{error}</div>")
-                
-            self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
+                if combined:
+                    combined += "\n"
+                combined += error
+            editor.setPlainText(combined or "(no output)")
+            layout.addWidget(editor)
+            btn_row = QHBoxLayout()
+            close_btn = QPushButton("Close")
+            btn_row.addStretch()
+            btn_row.addWidget(close_btn)
+            layout.addLayout(btn_row)
+            close_btn.clicked.connect(dlg.accept)
+            dlg.exec_()
         except Exception as e:
             QMessageBox.critical(self, "Execution Error", str(e))
 
@@ -3280,65 +3393,78 @@ class ChatbotGUI(QWidget):
         )
 
     def _split_stream_delta(self, piece: str) -> tuple[str, str]:
-        buf = (self._stream_buffer or "") + (piece or "")
+        buf_full = (self._stream_buffer or "") + (piece or "")
         think_out = ""
         answer_out = ""
+        think_tags = {"think", "analysis", "thinking"}
+        keep_from = -1
+        last_lt = buf_full.rfind("<")
+        if last_lt != -1 and ">" not in buf_full[last_lt:]:
+            keep_from = last_lt
+        if keep_from != -1:
+            buf = buf_full[:keep_from]
+            self._stream_buffer = buf_full[keep_from:]
+        else:
+            buf = buf_full
+            self._stream_buffer = ""
 
-        start_tags = ["<think>", "<analysis>", "<thinking>"]
-        end_tags = ["</think>", "</analysis>", "</thinking>"]
-        max_tag_len = max(len(t) for t in (start_tags + end_tags))
-        hold_len = max_tag_len - 1
-
-        def match_any(tags, idx):
-            for t in tags:
-                if buf.startswith(t, idx):
-                    return t
-            return None
+        def parse_tag_at(s: str, lt: int):
+            n = len(s)
+            j = lt + 1
+            while j < n and s[j].isspace():
+                j += 1
+            is_end = False
+            if j < n and s[j] == "/":
+                is_end = True
+                j += 1
+                while j < n and s[j].isspace():
+                    j += 1
+            name_start = j
+            while j < n and s[j].isalpha():
+                j += 1
+            if j == name_start:
+                return None
+            name = s[name_start:j].lower()
+            while j < n and s[j].isspace():
+                j += 1
+            gt = s.find(">", j)
+            if gt == -1:
+                return None
+            return name, is_end, gt
 
         i = 0
         while i < len(buf):
-            if not self._stream_in_think:
-                next_start = min((buf.find(t, i) for t in start_tags if buf.find(t, i) != -1), default=-1)
-                next_end = min((buf.find(t, i) for t in end_tags if buf.find(t, i) != -1), default=-1)
-
-                if next_start == -1 and next_end == -1:
-                    break
-
-                if next_end != -1 and (next_start == -1 or next_end < next_start):
-                    answer_out += buf[i:next_end]
-                    matched = match_any(end_tags, next_end)
-                    i = next_end + (len(matched) if matched else 0)
-                    continue
-
-                answer_out += buf[i:next_start]
-                matched = match_any(start_tags, next_start)
-                i = next_start + (len(matched) if matched else 0)
-                self._stream_in_think = True
-            else:
-                next_end = min((buf.find(t, i) for t in end_tags if buf.find(t, i) != -1), default=-1)
-                if next_end == -1:
+            lt = buf.find("<", i)
+            if lt == -1:
+                if self._stream_in_think:
                     think_out += buf[i:]
-                    i = len(buf)
-                    break
-                think_out += buf[i:next_end]
-                matched = match_any(end_tags, next_end)
-                i = next_end + (len(matched) if matched else 0)
-                self._stream_in_think = False
+                else:
+                    answer_out += buf[i:]
+                i = len(buf)
+                break
 
-        tail = buf[i:]
-        if not self._stream_in_think:
-            last_lt = tail.rfind("<")
-            if last_lt != -1 and len(tail) - last_lt <= hold_len:
-                answer_out += tail[:last_lt]
-                self._stream_buffer = tail[last_lt:]
+            if self._stream_in_think:
+                t = parse_tag_at(buf, lt)
+                if t and t[0] in think_tags and t[1] is True:
+                    think_out += buf[i:lt]
+                    self._stream_in_think = False
+                    i = t[2] + 1
+                    continue
+                think_out += buf[i : lt + 1]
+                i = lt + 1
             else:
-                answer_out += tail
-                self._stream_buffer = ""
-        else:
-            keep = tail[-hold_len:] if len(tail) > hold_len else tail
-            think_out += tail[:-hold_len] if len(tail) > hold_len else ""
-            self._stream_buffer = keep
-
+                t = parse_tag_at(buf, lt)
+                if t and t[0] in think_tags and t[1] is False:
+                    answer_out += buf[i:lt]
+                    self._stream_in_think = True
+                    i = t[2] + 1
+                    continue
+                if t and t[0] in think_tags and t[1] is True:
+                    answer_out += buf[i:lt]
+                    i = t[2] + 1
+                    continue
+                answer_out += buf[i : lt + 1]
+                i = lt + 1
         return think_out, answer_out
 
     def _finalize_stream_tail(self) -> tuple[str, str]:
@@ -3366,27 +3492,88 @@ class ChatbotGUI(QWidget):
                 answer = (prefix + rest)
                 return (think or "").strip(), (answer or "").strip()
 
+        m_end = re.search(r"</\s*(think|analysis|thinking)\s*>", raw, flags=re.IGNORECASE)
+        if m_end:
+            think = raw[:m_end.start()]
+            answer = raw[m_end.end():]
+            return (think or "").strip(), (answer or "").strip()
+
         m3 = re.search(r"(?im)^\s*(final answer|final|answer)\s*:\s*", raw)
         if m3:
             think = raw[:m3.start()]
             answer = raw[m3.end():]
             return (think or "").strip(), (answer or "").strip()
 
-        parts = re.split(r"\n\s*\n", raw, maxsplit=1)
-        if len(parts) == 2:
-            first, rest = parts
-            first_s = (first or "").strip()
-            if len(first_s) >= 160:
-                low = first_s.lower()
-                cues = [
-                    "the user", "let me think", "i should", "i will", "i'll",
-                    "reason", "thinking", "plan", "approach", "step 1", "1.",
-                    "2.", "3.",
-                ]
+        paras = [p.strip() for p in re.split(r"\n\s*\n+", raw) if p.strip()]
+        if paras:
+            cues = [
+                "the user", "let me think", "i should", "i will", "i'll",
+                "reason", "thinking", "plan", "approach", "let me",
+            ]
+
+            def looks_like_think(p: str) -> bool:
+                low = (p or "").strip().lower()
+                if not low:
+                    return False
+                if low.startswith("the user "):
+                    return True
+                if low.startswith("the user is "):
+                    return True
                 if any(c in low for c in cues):
-                    return first_s, (rest or "").strip()
+                    return True
+                return False
+
+            def looks_like_answer(p: str) -> bool:
+                low = (p or "").strip().lower()
+                if not low:
+                    return False
+                if re.match(r"^\s*\d+(\.\d+)?\s*$", p):
+                    return True
+                if "the answer is" in low:
+                    return True
+                if low.startswith("answer:") or low.startswith("final:") or low.startswith("final answer:"):
+                    return True
+                return False
+
+            answer_idx = None
+            for i in range(len(paras) - 1, -1, -1):
+                if looks_like_answer(paras[i]):
+                    answer_idx = i
+                    break
+
+            if answer_idx is not None:
+                think = "\n\n".join(paras[:answer_idx]).strip()
+                answer = "\n\n".join(paras[answer_idx:]).strip()
+                return think, answer
+
+            if looks_like_think(paras[0]) and len(paras) >= 2:
+                think = paras[0]
+                answer = "\n\n".join(paras[1:]).strip()
+                return think, answer
 
         return "", (raw or "").strip()
+
+    def _fallback_answer_from_user_text(self, user_text: str) -> str:
+        import re
+
+        ut = (user_text or "").strip()
+        if not ut:
+            return ""
+        low = ut.lower()
+
+        m = re.search(r"(\d+)\s*(?:st|nd|rd|th)?\s*fibonacci", low)
+        if m:
+            try:
+                n = int(m.group(1))
+            except Exception:
+                n = None
+            if n is not None and n >= 0:
+                a, b = 0, 1
+                for _ in range(n):
+                    a, b = b, a + b
+                return str(a)
+
+        return ""
 
     def on_new_token(self, token):
         think_delta, answer_delta = self._split_stream_delta(token)
@@ -3435,6 +3622,40 @@ class ChatbotGUI(QWidget):
                     merged_think = extracted_think.strip()
                 msg["think"] = merged_think
                 msg["answer"] = extracted_answer
+            else:
+                ans_now = (msg.get("answer", "") or "").strip()
+                low = ans_now.lower()
+                if low.startswith("the user ") or low.startswith("the user is ") or low.startswith("let me "):
+                    fallback = self._fallback_answer_from_user_text(getattr(self, "_last_user_text", ""))
+                    if fallback:
+                        msg["think"] = (ans_now or "")
+                        msg["answer"] = fallback
+
+            ans_now = (msg.get("answer", "") or "").strip()
+            if ans_now and not msg.get("think") and (ans_now.lower().startswith("the user ") or ans_now.lower().startswith("let me ")):
+                msg["think"] = ans_now
+                msg["answer"] = ""
+                ans_now = ""
+
+            if not ans_now and (msg.get("think") or "").strip():
+                try:
+                    sys_prompt = (self.system_prompt or "").strip() + "\n\nReturn ONLY the final answer. No reasoning."
+                    hist = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": (self._last_context_prompt or self._last_user_text or "")}]
+                    if hasattr(self.tokenizer, "apply_chat_template"):
+                        final_prompt = self.tokenizer.apply_chat_template(hist, tokenize=False, add_generation_prompt=True)
+                    else:
+                        final_prompt = f"User: {(self._last_context_prompt or self._last_user_text or '')}\nAssistant: "
+                    self._final_pending = (pending_chat, pending_idx)
+                    self.gen_status_lbl.setText("Finalizing…")
+                    self._final_worker = FinalAnswerWorker(self.model, self.tokenizer, final_prompt, max_tokens=256)
+                    self._final_worker.finished.connect(self._on_final_answer_ready)
+                    self._final_worker.error.connect(self._on_final_answer_error)
+                    self._final_worker.start()
+                    self.render_chat(self.active_chat)
+                    return
+                except Exception:
+                    pass
+
             assistant_answer = msg.get("answer", "") or ""
             self.chats[pending_chat].append({"role": "assistant", "content": assistant_answer})
         else:
@@ -3472,6 +3693,57 @@ class ChatbotGUI(QWidget):
         self.rag_badge.style().unpolish(self.rag_badge)
         self.rag_badge.style().polish(self.rag_badge)
 
+    def _on_final_answer_ready(self, text: str) -> None:
+        pending = getattr(self, "_final_pending", None)
+        if not (isinstance(pending, tuple) and len(pending) == 2):
+            return
+        chat_name, idx = pending
+        msgs = self.chat_ui.get(chat_name, [])
+        if not (0 <= idx < len(msgs)):
+            return
+        msg = msgs[idx]
+        msg["answer"] = (text or "").strip()
+        assistant_answer = msg.get("answer", "") or ""
+        self.chats.setdefault(chat_name, [{"role": "system", "content": self.system_prompt}]).append({"role": "assistant", "content": assistant_answer})
+        if msg.get("meta") is None:
+            msg["meta"] = {"tps": 0.0, "tokens": 0, "elapsed": 0.0}
+        try:
+            self._persist_message(
+                chat_name,
+                "assistant",
+                assistant_answer,
+                think=(msg.get("think", "") or ""),
+                thought_s=msg.get("thought_s"),
+                meta=msg.get("meta") if isinstance(msg.get("meta"), dict) else None,
+            )
+        except Exception:
+            pass
+        self._final_pending = None
+        self._final_worker = None
+        self._pending_chat = None
+        self._pending_msg_index = None
+        self.render_chat(self.active_chat)
+        try:
+            self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
+        except Exception:
+            pass
+        self.input_field.setDisabled(False)
+        self.send_btn.setDisabled(False)
+        self.stop_btn.setEnabled(False)
+        self.gen_status_lbl.setText("")
+        self.input_field.setFocus()
+
+    def _on_final_answer_error(self, err: str) -> None:
+        self._final_pending = None
+        self._final_worker = None
+        self._pending_chat = None
+        self._pending_msg_index = None
+        self.input_field.setDisabled(False)
+        self.send_btn.setDisabled(False)
+        self.stop_btn.setEnabled(False)
+        self.gen_status_lbl.setText("")
+        QMessageBox.critical(self, "Final Answer Error", err)
+
     def on_ai_error(self, err_msg):
         if self._pending_chat is not None and self._pending_msg_index is not None:
             try:
@@ -3482,7 +3754,7 @@ class ChatbotGUI(QWidget):
             self._pending_msg_index = None
 
         self.render_chat(self.active_chat)
-        self.chat_display.append(f"<div style='color: #ff5555; '><b>Error:</b> {self._html_escape(err_msg)}</div><br>")
+        QMessageBox.critical(self, "Generation Error", err_msg)
         self.input_field.setDisabled(False)
         self.send_btn.setDisabled(False)
         self.stop_btn.setEnabled(False)

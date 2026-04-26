@@ -2,7 +2,7 @@ LOKUM AI — TRAINING + DEV PANEL GUIDE
 
 This document explains what each major feature does, how to use it, and how the Developer Panel (Dev Mode) connects RAG and LoRA fine-tuning to the app.
 
-0) 2AM QUICK START (DO THIS IN ORDER)
+
 
 Goal: get RAG + LoRA working with minimum thinking.
 
