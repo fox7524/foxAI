@@ -313,6 +313,37 @@ class BenchmarkWorker(QThread):
             self.error.emit(str(e))
 
 
+class DeleteChatWorker(QThread):
+    finished = pyqtSignal(str, bool, str, float)
+
+    def __init__(self, db_path: str, chat_name: str):
+        super().__init__()
+        self._db_path = os.path.abspath(db_path or "app.db")
+        self._chat_name = (chat_name or "").strip()
+
+    def run(self):
+        start = time.perf_counter()
+        try:
+            conn = sqlite3.connect(self._db_path)
+            try:
+                conn.execute("PRAGMA foreign_keys = ON")
+                cur = conn.cursor()
+                cur.execute("SELECT id FROM chats WHERE name = ?", (self._chat_name,))
+                row = cur.fetchone()
+                if not row:
+                    self.finished.emit(self._chat_name, True, "", (time.perf_counter() - start) * 1000.0)
+                    return
+                chat_id = int(row[0])
+                cur.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+                cur.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+                conn.commit()
+            finally:
+                conn.close()
+            self.finished.emit(self._chat_name, True, "", (time.perf_counter() - start) * 1000.0)
+        except Exception as e:
+            self.finished.emit(self._chat_name, False, str(e), (time.perf_counter() - start) * 1000.0)
+
+
 class FinalAnswerWorker(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
@@ -1730,6 +1761,7 @@ class ChatbotGUI(QWidget):
         conn = sqlite3.connect(self._db_path())
         try:
             cur = conn.cursor()
+            conn.execute("PRAGMA foreign_keys = ON")
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS chats ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -1758,6 +1790,8 @@ class ChatbotGUI(QWidget):
                 cur.execute("ALTER TABLE messages ADD COLUMN thought_s REAL")
             if "meta" not in cols:
                 cur.execute("ALTER TABLE messages ADD COLUMN meta TEXT")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id_id ON messages(chat_id, id)")
             conn.commit()
         finally:
             conn.close()
@@ -1862,6 +1896,7 @@ class ChatbotGUI(QWidget):
     def _delete_chat_db(self, name: str) -> None:
         conn = sqlite3.connect(self._db_path())
         try:
+            conn.execute("PRAGMA foreign_keys = ON")
             cur = conn.cursor()
             cur.execute("SELECT id FROM chats WHERE name = ?", ((name or "").strip(),))
             row = cur.fetchone()
@@ -1873,6 +1908,19 @@ class ChatbotGUI(QWidget):
             conn.commit()
         finally:
             conn.close()
+
+    def _remove_chat_list_item(self, chat_name: str) -> None:
+        target = (chat_name or "").strip()
+        if not target:
+            return
+        for i in range(self.chat_list.count()):
+            it = self.chat_list.item(i)
+            if self._chat_name_from_item(it) == target:
+                w = self.chat_list.itemWidget(it)
+                if w is not None:
+                    w.deleteLater()
+                self.chat_list.takeItem(i)
+                break
 
     def _replace_user_message_db(self, chat_name: str, msg_index: int, new_content: str) -> None:
         conn = sqlite3.connect(self._db_path())
@@ -2371,16 +2419,41 @@ class ChatbotGUI(QWidget):
         res = QMessageBox.question(self, "Delete Chat", f"Delete '{chat_name}'? This cannot be undone.", QMessageBox.Yes | QMessageBox.No)
         if res != QMessageBox.Yes:
             return
-        self.chats.pop(chat_name, None)
-        self.chat_ui.pop(chat_name, None)
+        self.gen_status_lbl.setText("Deleting…")
         try:
-            self._delete_chat_db(chat_name)
+            self.chat_list.setEnabled(False)
         except Exception:
             pass
+        self._delete_worker = DeleteChatWorker(self._db_path(), chat_name)
+        self._delete_worker.finished.connect(self._on_chat_deleted)
+        self._delete_worker.start()
+
+    def _on_chat_deleted(self, chat_name: str, ok: bool, err: str, db_ms: float) -> None:
+        ui_start = time.perf_counter()
+        try:
+            self.chat_list.setEnabled(True)
+        except Exception:
+            pass
+        if not ok:
+            self.gen_status_lbl.setText("")
+            QMessageBox.critical(self, "Delete Chat", err or "Delete failed.")
+            return
+        self.chats.pop(chat_name, None)
+        self.chat_ui.pop(chat_name, None)
+        self._remove_chat_list_item(chat_name)
         if self.active_chat == chat_name:
             self.active_chat = "Default Chat"
-        self._rebuild_chat_list()
+            if self.active_chat not in self.chats:
+                self.chats[self.active_chat] = [{"role": "system", "content": self.system_prompt}]
+                self.chat_ui.setdefault(self.active_chat, [])
+        it = self._find_chat_list_item(self.active_chat)
+        if it is not None:
+            self.chat_list.setCurrentItem(it)
+        self._refresh_chat_list_row_visuals()
         self.render_chat(self.active_chat)
+        ui_ms = (time.perf_counter() - ui_start) * 1000.0
+        self.gen_status_lbl.setText(f"Deleted ({db_ms:.0f}ms DB, {ui_ms:.0f}ms UI)")
+        QTimer.singleShot(1600, lambda: self.gen_status_lbl.setText(""))
 
     def _menu_show_history_for(self, chat_name: str):
         data = {

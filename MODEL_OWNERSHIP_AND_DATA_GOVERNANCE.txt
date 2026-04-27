@@ -1,0 +1,99 @@
+MODEL OWNERSHIP & DATA GOVERNANCE (LokumAI)
+
+This is a practical, non-legal summary of common ownership and governance topics when you fine-tune local models and use RAG. For legal certainty, consult your own counsel.
+
+
+1) WHAT YOU “OWN” AFTER FINE-TUNING
+
+1.1 Base model
+- You generally do NOT own the base model weights you downloaded.
+- Your rights depend on the base model’s license (commercial / non-commercial / attribution / redistribution limits).
+
+1.2 Your LoRA adapter (fine-tune output)
+- You generally own the copyright/IP in:
+  - the dataset you created (if it is your original work or you have rights)
+  - your adapter artifacts (weights/configs) as “derivative artifacts” of training
+- HOWEVER:
+  - adapter redistribution may still be restricted by the base model license
+  - if your dataset contains third-party content, you may not have rights to redistribute it
+
+1.3 Fused/merged model
+- If you “fuse” adapter + base weights into a new model folder, that merged folder is a derivative.
+- Distribution of that merged folder is typically governed by the base model license AND any dataset licensing constraints.
+
+
+2) DATA PRIVACY IMPLICATIONS
+
+2.1 RAG index data
+- RAG stores your text chunks on disk (index + metadata).
+- If your project contains secrets, personal data, or proprietary info, RAG will store/retrieve it unless you exclude it.
+
+Recommended controls:
+- Add ignore rules for .env, keys, credentials, build outputs, large binaries, etc.
+- Treat the RAG index files as sensitive artifacts.
+- Use full-disk encryption on the machine (common on macOS).
+
+2.2 Fine-tuning dataset data
+- Fine-tuning can “memorize” snippets depending on dataset quality/size and training settings.
+- Avoid training on secrets or personal identifiers.
+- Prefer training on behavioral patterns and general instructions rather than raw private documents.
+
+
+3) MODEL PORTABILITY
+
+3.1 Portable artifacts
+- RAG: index files + metadata files are portable, but embeddings are model-dependent.
+  If you change embedding model, you must re-index.
+- LoRA: adapter folders are portable as long as they are compatible with:
+  - the same base model architecture
+  - the same tokenizer/model family expected by mlx_lm
+
+3.2 Portability checklist
+- Keep a record of:
+  - base model name/path + version
+  - training command/config used (iters, rank, alpha, batch)
+  - dataset source and license status
+
+
+4) LICENSING RESTRICTIONS (COMMON PATTERNS)
+
+Licenses vary widely. Common restrictions include:
+- Non-commercial use only
+- Attribution requirements
+- No redistribution of weights or derivatives
+- No use in specific restricted domains
+
+Rule of thumb:
+- If you plan to ship/distribute the model (adapter or fused), verify license terms for:
+  1) base model
+  2) your dataset sources
+  3) any included third-party text/code
+
+
+5) GOVERNANCE POLICY (RECOMMENDED PRACTICE)
+
+5.1 Data classification
+- Public: safe to store in RAG/fine-tune
+- Internal: ok for RAG, careful for fine-tune
+- Confidential/Secret: exclude from RAG and never fine-tune on it
+
+5.2 Retention & deletion
+- RAG: support “Reset RAG Index” to delete indexed content when needed.
+- Fine-tune: keep datasets and adapters versioned; delete old datasets/adapters when no longer needed.
+
+5.3 Access control
+- Restrict access to:
+  - app.db (chat history)
+  - dataset.db (fine-tune training data, if used)
+  - faiss_index.bin / docs_metadata.npy (RAG artifacts)
+  - lora_data/* (exports/adapters/configs)
+
+
+6) PRACTICAL DISCLAIMER
+
+- This document is operational guidance, not legal advice.
+- Your exact rights depend on:
+  - model license
+  - dataset license
+  - your organization/client agreements
+  - jurisdiction and contract terms
