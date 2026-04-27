@@ -106,6 +106,13 @@ try:
 except Exception as e:
     FINETUNE_IMPORT_ERROR = str(e)
 
+try:
+    from file_ingest import iter_files as ingest_iter_files
+    from file_ingest import build_text_chunks_from_paths as ingest_build_chunks
+except Exception:
+    ingest_iter_files = None
+    ingest_build_chunks = None
+
 # Application version and dev mode password
 VERSION = "LokumAI"
 DEV_MODE_PASSWORD = "123"
@@ -1064,6 +1071,21 @@ class DevPanelDialog(QWidget):
         
         data_box.setLayout(d_layout)
         layout.addWidget(data_box)
+
+        ingest_box = QGroupBox("Build Training Dataset From Files")
+        i_layout = QGridLayout()
+        i_layout.addWidget(QLabel("Folder:"), 0, 0)
+        self.ft_ingest_folder = QLineEdit()
+        self.ft_ingest_folder.setPlaceholderText("Select a folder containing .py/.cpp/.html/.pdf/.zim/.jpg files...")
+        i_layout.addWidget(self.ft_ingest_folder, 0, 1)
+        pick_btn = QPushButton("Browse")
+        pick_btn.clicked.connect(self.browse_finetune_ingest_folder)
+        i_layout.addWidget(pick_btn, 0, 2)
+        export_btn = QPushButton("Export JSONL Dataset (train/valid)")
+        export_btn.clicked.connect(self.export_finetune_dataset_from_folder)
+        i_layout.addWidget(export_btn, 1, 0, 1, 3)
+        ingest_box.setLayout(i_layout)
+        layout.addWidget(ingest_box)
         
         # Control buttons
         btn_row = QHBoxLayout()
@@ -1093,6 +1115,35 @@ class DevPanelDialog(QWidget):
         
         layout.addStretch()
         return widget
+
+    def browse_finetune_ingest_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder For Training Data")
+        if folder:
+            self.ft_ingest_folder.setText(folder)
+
+    def export_finetune_dataset_from_folder(self):
+        folder = (self.ft_ingest_folder.text() if hasattr(self, "ft_ingest_folder") else "").strip()
+        if not folder or not os.path.isdir(folder):
+            QMessageBox.warning(self, "Invalid Folder", "Please select a valid folder.")
+            return
+        if ingest_iter_files is None or ingest_build_chunks is None:
+            QMessageBox.warning(self, "Unavailable", "file_ingest is not available. Ensure file_ingest.py exists and restarts cleanly.")
+            return
+
+        try:
+            paths = ingest_iter_files(folder, recursive=True)
+            if not paths:
+                raise RuntimeError("No supported files found in the selected folder.")
+            chunks = ingest_build_chunks(paths, chunk_size=900, overlap=120)
+            if not chunks:
+                raise RuntimeError("No text could be extracted from the selected files.")
+            out_dir = os.path.join(os.path.abspath("lora_data"), "ingested_export")
+            os.makedirs(out_dir, exist_ok=True)
+            lines = [json.dumps({"text": c}, ensure_ascii=False) for c in chunks if (c or "").strip()]
+            self._write_train_valid_jsonl(out_dir, lines)
+            QMessageBox.information(self, "Export Complete", f"Exported dataset:\n{out_dir}\n\nChunks: {len(lines)}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", str(e))
     
     def browse_jsonl(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select JSONL File", "", "JSONL Files (*.jsonl)")

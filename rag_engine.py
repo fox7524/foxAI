@@ -35,18 +35,8 @@ except ImportError:
     HAS_FAISS = False
     print("Warning: faiss not installed. Run: pip install faiss-cpu")
 
-# Import sentence-transformers for creating embeddings
-# This model converts text into 384-dimensional vectors
-# We use 'all-MiniLM-L6-v2' because it's:
-# - Fast (lightweight)
-# - Good quality embeddings
-# - Works well on CPU
-try:
-    from sentence_transformers import SentenceTransformer
-    HAS_SENTENCE_TRANSFORMERS = True
-except ImportError:
-    HAS_SENTENCE_TRANSFORMERS = False
-    print("Warning: sentence-transformers not installed. Run: pip install sentence-transformers")
+SentenceTransformer = None
+HAS_SENTENCE_TRANSFORMERS = False
 
 # PDF processing library - extracts text from PDF files
 try:
@@ -63,6 +53,23 @@ try:
 except ImportError:
     HAS_DOCX = False
     print("Warning: python-docx not installed. Run: pip install python-docx")
+
+# Image OCR (optional) - extracts text from images (JPG/PNG/etc.)
+try:
+    from PIL import Image  # pillow
+    HAS_PIL = True
+except ImportError:
+    Image = None
+    HAS_PIL = False
+    print("Warning: pillow not installed. Run: pip install pillow")
+
+try:
+    import pytesseract  # requires system tesseract installed
+    HAS_TESSERACT = True
+except ImportError:
+    pytesseract = None
+    HAS_TESSERACT = False
+    print("Warning: pytesseract not installed. Run: pip install pytesseract (also requires 'tesseract' installed on your OS)")
 
 # File paths where we persist our FAISS index and document metadata
 INDEX_PATH = "./faiss_index.bin"       # Stores the FAISS index (vectors)
@@ -88,6 +95,17 @@ class RAGEngine:
 
     def __init__(self):
         # Check if we have all required dependencies
+        global SentenceTransformer, HAS_SENTENCE_TRANSFORMERS
+        if not HAS_SENTENCE_TRANSFORMERS:
+            try:
+                from sentence_transformers import SentenceTransformer as _SentenceTransformer
+                SentenceTransformer = _SentenceTransformer
+                HAS_SENTENCE_TRANSFORMERS = True
+            except Exception as e:
+                HAS_SENTENCE_TRANSFORMERS = False
+                SentenceTransformer = None
+                print(f"Warning: sentence-transformers not available ({e}). Install: pip install sentence-transformers")
+
         self.enabled = bool(HAS_SENTENCE_TRANSFORMERS and HAS_FAISS)
         if not self.enabled:
             return
@@ -298,30 +316,107 @@ class RAGEngine:
         RETURNS:
             Extracted text or placeholder message
         """
+        text_parts = []
         try:
-            import zim
+            try:
+                import pyzim  # published on PyPI as python-zim
+            except Exception:
+                pyzim = None
 
-            text_parts = []
+            if pyzim is not None:
+                with pyzim.Zim.open(file_path) as zf:
+                    it = None
+                    if hasattr(zf, "iter_entries"):
+                        it = zf.iter_entries()
+                    elif hasattr(zf, "iter_content_entries"):
+                        it = zf.iter_content_entries()
+                    elif hasattr(zf, "entries"):
+                        it = getattr(zf, "entries")
+                    if it is None:
+                        return ""
 
-            # Open ZIM file (read-only)
-            with zim.open(file_path) as zim_file:
-                # Iterate through all article entries
-                for entry in zim_file.entries:
-                    # Skip non-article entries (images, etc.)
-                    if entry.mimetype == 'text/html':
-                        # Get article content
-                        content = entry.get_text()
+                    for entry in it:
+                        title = (getattr(entry, "title", "") or "").strip()
+                        mimetype = (getattr(entry, "mimetype", "") or "").lower()
+                        if not title:
+                            continue
+                        if title.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp")):
+                            continue
+                        if mimetype and not mimetype.startswith("text/"):
+                            continue
+                        try:
+                            content = entry.read()
+                            if isinstance(content, bytes):
+                                content = content.decode("utf-8", errors="ignore")
+                            content = (content or "").strip()
+                        except Exception:
+                            content = ""
                         if content:
-                            text_parts.append(f"## {entry.title}\n\n{content}")
+                            text_parts.append(f"## {title}\n\n{content}")
+                        if len(text_parts) >= 200:
+                            break
+                return "\n\n".join(text_parts)
 
-            # Join all articles
-            return "\n\n".join(text_parts)
+            try:
+                from libzim.reader import Archive as LibZimArchive
+            except Exception:
+                LibZimArchive = None
 
-        except ImportError:
-            print("[RAG] ZIM library not available. Install with: pip install zim")
-            return "[ZIM: Library not installed]"
+            if LibZimArchive is not None:
+                zf = LibZimArchive(file_path)
+                n = getattr(zf, "entry_count", None)
+                if callable(n):
+                    n = n()
+                if not isinstance(n, int):
+                    n = 0
+                for i in range(min(n, 500)):
+                    try:
+                        entry = None
+                        if hasattr(zf, "get_entry_by_id"):
+                            entry = zf.get_entry_by_id(i)
+                        elif hasattr(zf, "get_entry"):
+                            entry = zf.get_entry(i)
+                        if entry is None:
+                            continue
+                        title = (getattr(entry, "title", "") or "").strip()
+                        if not title:
+                            continue
+                        item = entry.get_item() if hasattr(entry, "get_item") else None
+                        raw = bytes(item.content) if (item is not None and hasattr(item, "content")) else b""
+                        content = raw.decode("utf-8", errors="ignore").strip()
+                        if content:
+                            text_parts.append(f"## {title}\n\n{content}")
+                        if len(text_parts) >= 200:
+                            break
+                    except Exception:
+                        continue
+                return "\n\n".join(text_parts)
+
+            print("[RAG] ZIM support not available. Install: pip install 'python-zim[all]' OR pip install libzim")
+            return ""
         except Exception as e:
             print(f"[RAG] ZIM extraction error for {file_path}: {e}")
+            return ""
+
+    def extract_from_image(self, file_path: str) -> str:
+        """
+        Extract text from images using OCR.
+
+        Supported formats:
+        - .jpg, .jpeg, .png, .webp, .bmp, .tif, .tiff
+
+        Requirements:
+        - pip install pillow pytesseract
+        - Install 'tesseract' on the system (macOS: brew install tesseract)
+        """
+        if not (HAS_PIL and HAS_TESSERACT):
+            return ""
+        try:
+            img = Image.open(file_path)
+            txt = pytesseract.image_to_string(img)
+            return (txt or "").strip()
+        except Exception as e:
+            print(f"[RAG] Image OCR error for {file_path}: {e}")
             return ""
 
     def extract_from_code(self, file_path: str) -> str:
@@ -411,6 +506,9 @@ class RAGEngine:
             elif ext == '.zim':
                 # Offline Wikipedia / knowledge base archives
                 content = self.extract_from_zim(file_path)
+
+            elif ext in ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff']:
+                content = self.extract_from_image(file_path)
 
             elif ext in [
                 '.py', '.cpp', '.c', '.h', '.hpp', '.js', '.ts',
@@ -528,6 +626,7 @@ class RAGEngine:
         # Extensions we support
         extensions = [
             '*.pdf', '*.docx', '*.doc', '*.zim',
+            '*.jpg', '*.jpeg', '*.png', '*.webp', '*.bmp', '*.tif', '*.tiff',
             '*.py', '*.cpp', '*.c', '*.h', '*.hpp', '*.js', '*.ts',
             '*.html', '*.htm', '*.css', '*.txt', '*.md',
             '*.json', '*.xml', '*.yaml', '*.yml', '*.sh',
