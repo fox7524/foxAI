@@ -351,6 +351,38 @@ class DeleteChatWorker(QThread):
             self.finished.emit(self._chat_name, False, str(e), (time.perf_counter() - start) * 1000.0)
 
 
+class DatasetExportWorker(QThread):
+    finished = pyqtSignal(bool, str, int, int, str)
+
+    def __init__(self, folder: str, out_dir: str):
+        super().__init__()
+        self._folder = os.path.abspath(folder or "")
+        self._out_dir = os.path.abspath(out_dir or "")
+
+    def run(self):
+        try:
+            if ingest_iter_files is None or ingest_build_chunks is None:
+                self.finished.emit(False, "", 0, 0, "file_ingest is not available.")
+                return
+            if not self._folder or not os.path.isdir(self._folder):
+                self.finished.emit(False, "", 0, 0, "Invalid folder.")
+                return
+
+            paths = ingest_iter_files(self._folder, recursive=True)
+            if not paths:
+                self.finished.emit(False, "", 0, 0, "No supported files found in the selected folder.")
+                return
+            chunks = ingest_build_chunks(paths, chunk_size=900, overlap=120)
+            if not chunks:
+                self.finished.emit(False, "", 0, len(paths), "No text could be extracted from the selected files.")
+                return
+            os.makedirs(self._out_dir, exist_ok=True)
+            lines = [json.dumps({"text": c}, ensure_ascii=False) for c in chunks if (c or "").strip()]
+            self.finished.emit(True, self._out_dir, len(lines), len(paths), "")
+        except Exception as e:
+            self.finished.emit(False, "", 0, 0, str(e))
+
+
 class FinalAnswerWorker(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
@@ -501,7 +533,7 @@ class MemoryMonitor(QThread):
         then sleeps for 2 seconds before repeating.
         """
         process = psutil.Process(os.getpid())
-        while True:
+        while not self.isInterruptionRequested():
             try:
                 # Get memory info for THIS process only
                 mem_info = process.memory_info()
@@ -520,9 +552,9 @@ class MemoryMonitor(QThread):
                     f"{cpu_percent:.1f}%",
                     gpu_percent,
                 )
-            except:
-                pass  # Ignore errors, try again next iteration
-            time.sleep(2)
+            except Exception:
+                pass
+            self.msleep(2000)
 
     def _get_gpu_util_percent(self) -> str:
         if sys.platform == "darwin":
@@ -1082,6 +1114,7 @@ class DevPanelDialog(QWidget):
         pick_btn.clicked.connect(self.browse_finetune_ingest_folder)
         i_layout.addWidget(pick_btn, 0, 2)
         export_btn = QPushButton("Export JSONL Dataset (train/valid)")
+        self._export_dataset_btn = export_btn
         export_btn.clicked.connect(self.export_finetune_dataset_from_folder)
         i_layout.addWidget(export_btn, 1, 0, 1, 3)
         ingest_box.setLayout(i_layout)
@@ -1130,20 +1163,39 @@ class DevPanelDialog(QWidget):
             QMessageBox.warning(self, "Unavailable", "file_ingest is not available. Ensure file_ingest.py exists and restarts cleanly.")
             return
 
+        out_dir = os.path.join(os.path.abspath("lora_data"), "ingested_export")
+        if hasattr(self, "train_log") and self.train_log is not None:
+            self.train_log.appendPlainText(f"[dataset] Exporting from: {folder}")
+        if hasattr(self, "_export_dataset_btn") and self._export_dataset_btn is not None:
+            self._export_dataset_btn.setEnabled(False)
+        self._ds_export_worker = DatasetExportWorker(folder, out_dir)
+        self._ds_export_worker.finished.connect(self._on_dataset_export_finished)
+        self._ds_export_worker.start()
+
+    def _on_dataset_export_finished(self, ok: bool, out_dir: str, chunk_count: int, file_count: int, err: str):
+        if hasattr(self, "_export_dataset_btn") and self._export_dataset_btn is not None:
+            self._export_dataset_btn.setEnabled(True)
+        if not ok:
+            if hasattr(self, "train_log") and self.train_log is not None:
+                self.train_log.appendPlainText(f"[dataset] Export failed: {err}")
+            QMessageBox.critical(self, "Export Error", err or "Export failed.")
+            return
         try:
-            paths = ingest_iter_files(folder, recursive=True)
-            if not paths:
-                raise RuntimeError("No supported files found in the selected folder.")
-            chunks = ingest_build_chunks(paths, chunk_size=900, overlap=120)
-            if not chunks:
-                raise RuntimeError("No text could be extracted from the selected files.")
-            out_dir = os.path.join(os.path.abspath("lora_data"), "ingested_export")
-            os.makedirs(out_dir, exist_ok=True)
-            lines = [json.dumps({"text": c}, ensure_ascii=False) for c in chunks if (c or "").strip()]
-            self._write_train_valid_jsonl(out_dir, lines)
-            QMessageBox.information(self, "Export Complete", f"Exported dataset:\n{out_dir}\n\nChunks: {len(lines)}")
-        except Exception as e:
-            QMessageBox.critical(self, "Export Error", str(e))
+            dataset_path = out_dir
+            lines = []
+            train_jsonl = os.path.join(dataset_path, "train.jsonl")
+            valid_jsonl = os.path.join(dataset_path, "valid.jsonl")
+            for p in (train_jsonl, valid_jsonl):
+                if os.path.isfile(p):
+                    with open(p, "r", encoding="utf-8") as f:
+                        lines.extend([ln for ln in f.read().splitlines() if ln.strip()])
+            if lines:
+                self._write_train_valid_jsonl(dataset_path, lines)
+        except Exception:
+            pass
+        if hasattr(self, "train_log") and self.train_log is not None:
+            self.train_log.appendPlainText(f"[dataset] Exported {int(chunk_count)} chunks from {int(file_count)} files to: {out_dir}")
+        QMessageBox.information(self, "Export Complete", f"Exported dataset:\n{out_dir}\n\nFiles: {int(file_count)}\nChunks: {int(chunk_count)}")
     
     def browse_jsonl(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select JSONL File", "", "JSONL Files (*.jsonl)")
@@ -1752,11 +1804,14 @@ class DevPanelDialog(QWidget):
 # MAIN UI
 # ---------------------------------------------------------
 class ChatbotGUI(QWidget):
-    def __init__(self, model, tokenizer, model_path):
+    def __init__(self, model, tokenizer, model_path, *, db_path: str | None = None, start_service: bool = True, start_monitor: bool = True):
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
         self.current_model_path = model_path or ""
+        self._db_path_override = os.path.abspath(db_path) if db_path else None
+        self._start_service = bool(start_service)
+        self._start_monitor = bool(start_monitor)
         self.unrestricted_mode = False
         self.dev_mode_active = False
         self.dev_sidebar_shown = False
@@ -1797,15 +1852,19 @@ class ChatbotGUI(QWidget):
         self._init_chat_db()
         self._load_chats_from_db()
 
-        # Start HW Monitor
-        self.mem_thread = MemoryMonitor()
-        self.mem_thread.update_signal.connect(self.update_hw_stats)
-        self.mem_thread.start()
+        self.mem_thread = None
+        if self._start_monitor:
+            self.mem_thread = MemoryMonitor()
+            self.mem_thread.update_signal.connect(self.update_hw_stats)
+            self.mem_thread.start()
 
-        self.start_ai_service()
+        if self._start_service:
+            self.start_ai_service()
         self._restore_dev_dialog_state()
 
     def _db_path(self) -> str:
+        if self._db_path_override:
+            return self._db_path_override
         return os.path.abspath("app.db")
 
     def _init_chat_db(self) -> None:
@@ -2386,7 +2445,9 @@ class ChatbotGUI(QWidget):
         item = QListWidgetItem("")
         item.setData(Qt.UserRole, chat_name)
         self.chat_list.addItem(item)
+        self._set_chat_list_item_widget(item, chat_name)
 
+    def _set_chat_list_item_widget(self, item: QListWidgetItem, chat_name: str) -> None:
         w = QWidget()
         w.setObjectName("ChatItemRow")
         w.setProperty("selected", False)
@@ -2407,7 +2468,7 @@ class ChatbotGUI(QWidget):
         btn.setCursor(Qt.PointingHandCursor)
         btn.setFocusPolicy(Qt.NoFocus)
         btn.setFixedSize(30, 26)
-        btn.clicked.connect(lambda _=False, name=chat_name: self.open_chat_list_menu(name, btn))
+        btn.clicked.connect(lambda _=False, it=item, anchor=btn: self.open_chat_list_menu(self._chat_name_from_item(it), anchor))
         layout.addWidget(btn)
 
         w.mousePressEvent = lambda _e, it=item: self.chat_list.setCurrentItem(it)
@@ -2417,6 +2478,24 @@ class ChatbotGUI(QWidget):
             item.setSizeHint(QSize(220, h))
         except Exception:
             item.setSizeHint(QSize(220, 52))
+
+    def _rename_chat_list_item(self, old_name: str, new_name: str) -> None:
+        it = self._find_chat_list_item(old_name)
+        if it is None:
+            return
+        it.setData(Qt.UserRole, new_name)
+        w = self.chat_list.itemWidget(it)
+        if w is not None:
+            lbl = w.findChild(QLabel, "ChatItemLabel")
+            if lbl is not None:
+                lbl.setText(new_name)
+            try:
+                h = max(52, int(w.sizeHint().height()))
+                it.setSizeHint(QSize(220, h))
+            except Exception:
+                pass
+        else:
+            self._set_chat_list_item_widget(it, new_name)
 
     def _refresh_chat_list_row_visuals(self) -> None:
         current = self.chat_list.currentItem()
@@ -2461,7 +2540,6 @@ class ChatbotGUI(QWidget):
         if not ok or not new_name.strip():
             return
         self._rename_chat(chat_name, new_name.strip())
-        self._rebuild_chat_list()
 
     def _delete_chat_by_name(self, chat_name: str):
         if chat_name == "Default Chat":
@@ -2470,6 +2548,13 @@ class ChatbotGUI(QWidget):
         res = QMessageBox.question(self, "Delete Chat", f"Delete '{chat_name}'? This cannot be undone.", QMessageBox.Yes | QMessageBox.No)
         if res != QMessageBox.Yes:
             return
+        if getattr(self, "_pending_chat", None) == chat_name:
+            try:
+                self.stop_generation()
+            except Exception:
+                pass
+            self._pending_chat = None
+            self._pending_msg_index = None
         self.gen_status_lbl.setText("Deleting…")
         try:
             self.chat_list.setEnabled(False)
@@ -2489,6 +2574,9 @@ class ChatbotGUI(QWidget):
             self.gen_status_lbl.setText("")
             QMessageBox.critical(self, "Delete Chat", err or "Delete failed.")
             return
+        if getattr(self, "_pending_chat", None) == chat_name:
+            self._pending_chat = None
+            self._pending_msg_index = None
         self.chats.pop(chat_name, None)
         self.chat_ui.pop(chat_name, None)
         self._remove_chat_list_item(chat_name)
@@ -2538,6 +2626,24 @@ class ChatbotGUI(QWidget):
                 pass
         self.stop_btn.setEnabled(False)
         self.gen_status_lbl.setText("Stopping…")
+
+    def closeEvent(self, event):
+        try:
+            self.stop_generation()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_final_worker", None) is not None:
+                self._final_worker.requestInterruption()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "mem_thread", None) is not None:
+                self.mem_thread.requestInterruption()
+                self.mem_thread.wait(2000)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def detect_system_theme(self) -> str:
         pal = QApplication.instance().palette()
@@ -3069,10 +3175,14 @@ class ChatbotGUI(QWidget):
                 conn.close()
         except Exception:
             pass
-        self._rebuild_chat_list()
-        it = self._find_chat_list_item(title)
-        if it is not None:
-            self.chat_list.setCurrentItem(it)
+        try:
+            self._add_chat_list_item(title)
+            it = self._find_chat_list_item(title)
+            if it is not None:
+                self.chat_list.setCurrentItem(it)
+            self._refresh_chat_list_row_visuals()
+        except Exception:
+            self._rebuild_chat_list()
         self.render_chat(self.active_chat)
 
     def switch_chat(self, item):
@@ -3101,7 +3211,7 @@ class ChatbotGUI(QWidget):
         super().resizeEvent(event)
         self._refresh_chat_list_row_visuals()
 
-    def _rename_chat(self, old_name: str, new_name: str):
+    def _rename_chat(self, old_name: str, new_name: str, *, render_after: bool = True):
         if new_name in self.chats and new_name != old_name:
             QMessageBox.warning(self, "Name Exists", "A chat with this name already exists.")
             return
@@ -3109,13 +3219,23 @@ class ChatbotGUI(QWidget):
             return
         self.chats[new_name] = self.chats.pop(old_name)
         self.chat_ui[new_name] = self.chat_ui.pop(old_name, [])
+        if getattr(self, "_pending_chat", None) == old_name:
+            self._pending_chat = new_name
         try:
             self._rename_chat_db(old_name, new_name)
         except Exception:
             pass
         self.active_chat = new_name
-        self._rebuild_chat_list()
-        self.render_chat(self.active_chat)
+        try:
+            self._rename_chat_list_item(old_name, new_name)
+            it = self._find_chat_list_item(new_name)
+            if it is not None:
+                self.chat_list.setCurrentItem(it)
+            self._refresh_chat_list_row_visuals()
+        except Exception:
+            self._rebuild_chat_list()
+        if render_after:
+            self.render_chat(self.active_chat)
 
     def _is_placeholder_chat_name(self, name: str) -> bool:
         return name == "New Chat" or name.startswith("New Chat ")
@@ -3131,7 +3251,7 @@ class ChatbotGUI(QWidget):
         while new_name in self.chats and new_name != self.active_chat:
             new_name = f"{base} ({idx})"
             idx += 1
-        self._rename_chat(self.active_chat, new_name)
+        self._rename_chat(self.active_chat, new_name, render_after=False)
 
     def on_chat_anchor_clicked(self, url):
         s = url.toString()
@@ -3420,7 +3540,7 @@ class ChatbotGUI(QWidget):
         if self.active_chat not in self.chats:
             self.chats[self.active_chat] = [{"role": "system", "content": self.system_prompt}]
             self._rebuild_chat_list()
-        is_first_user_msg = not any(m.get("role") == "user" for m in self.chat_ui[self.active_chat])
+        is_first_user_msg = not any(m.get("role") == "user" for m in self.chats.get(self.active_chat, []) or [])
         if is_first_user_msg and self._is_placeholder_chat_name(self.active_chat):
             self._auto_name_active_chat(user_text)
 
@@ -3438,7 +3558,6 @@ class ChatbotGUI(QWidget):
             self._persist_message(self.active_chat, "user", user_text)
         except Exception:
             pass
-        self.render_chat(self.active_chat)
         
         # Context formulation
         context_prompt = user_text
@@ -3484,6 +3603,7 @@ class ChatbotGUI(QWidget):
         )
         self._pending_chat = self.active_chat
         self._pending_msg_index = len(self.chat_ui[self.active_chat]) - 1
+        self.render_chat(self.active_chat)
         
         self.worker = AIWorker(self.model, self.tokenizer, prompt_string)
         self.worker.new_token.connect(self.on_new_token)
@@ -3745,26 +3865,38 @@ class ChatbotGUI(QWidget):
         think_delta, answer_delta = self._split_stream_delta(token)
 
         if self._pending_chat is not None and self._pending_msg_index is not None:
-            msg = self.chat_ui[self._pending_chat][self._pending_msg_index]
+            msgs = self.chat_ui.get(self._pending_chat, [])
+            if not (0 <= int(self._pending_msg_index) < len(msgs)):
+                return
+            msg = msgs[int(self._pending_msg_index)]
             if think_delta:
                 msg["think"] = (msg.get("think", "") or "") + think_delta
             msg["answer"] += answer_delta
         if answer_delta and not getattr(self, "_answer_started", False):
             thought_s = max(0.0, time.time() - getattr(self, "_thinking_start_ts", time.time()))
             if self._pending_chat is not None and self._pending_msg_index is not None:
-                self.chat_ui[self._pending_chat][self._pending_msg_index]["thought_s"] = float(thought_s)
+                msgs = self.chat_ui.get(self._pending_chat, [])
+                if 0 <= int(self._pending_msg_index) < len(msgs):
+                    msgs[int(self._pending_msg_index)]["thought_s"] = float(thought_s)
             self._answer_started = True
-        if answer_delta:
-            self._schedule_render()
+        if (think_delta or answer_delta) and self._pending_chat is not None:
+            self._schedule_render(self._pending_chat)
 
-    def _schedule_render(self):
+    def _schedule_render(self, chat_name: str | None):
         if not hasattr(self, "_render_timer") or self._render_timer is None:
             self._render_timer = QTimer(self)
             self._render_timer.setSingleShot(True)
-            self._render_timer.timeout.connect(lambda: self.render_chat(self.active_chat))
+            self._render_timer.timeout.connect(self._run_scheduled_render)
 
+        if chat_name:
+            self._render_target_chat = chat_name
         if not self._render_timer.isActive():
             self._render_timer.start(40)
+
+    def _run_scheduled_render(self) -> None:
+        target = getattr(self, "_render_target_chat", None)
+        if target and target == self.active_chat:
+            self.render_chat(target)
 
     def on_ai_success(self, response, tps, tokens, ms, peak_memory_gb):
         pending_chat = self._pending_chat
@@ -3774,74 +3906,88 @@ class ChatbotGUI(QWidget):
 
         _, tail = self._finalize_stream_tail()
         if tail and pending_chat is not None and pending_idx is not None:
-            self.chat_ui[pending_chat][pending_idx]["answer"] += tail
+            msgs = self.chat_ui.get(pending_chat, [])
+            if 0 <= int(pending_idx) < len(msgs):
+                msgs[int(pending_idx)]["answer"] += tail
 
         assistant_answer = ""
         if pending_chat is not None and pending_idx is not None:
-            msg = self.chat_ui[pending_chat][pending_idx]
-            merged_think = (msg.get("think", "") or "").strip()
-            extracted_think, extracted_answer = self._extract_think_answer_from_text(msg.get("answer", ""))
-            if extracted_think:
-                if merged_think:
-                    merged_think = (merged_think + "\n" + extracted_think).strip()
-                else:
-                    merged_think = extracted_think.strip()
-                msg["think"] = merged_think
-                msg["answer"] = extracted_answer
-            else:
-                ans_now = (msg.get("answer", "") or "").strip()
-                low = ans_now.lower()
-                if low.startswith("the user ") or low.startswith("the user is ") or low.startswith("let me "):
-                    fallback = self._fallback_answer_from_user_text(getattr(self, "_last_user_text", ""))
-                    if fallback:
-                        msg["think"] = (ans_now or "")
-                        msg["answer"] = fallback
-
-            ans_now = (msg.get("answer", "") or "").strip()
-            if ans_now and not msg.get("think") and (ans_now.lower().startswith("the user ") or ans_now.lower().startswith("let me ")):
-                msg["think"] = ans_now
-                msg["answer"] = ""
-                ans_now = ""
-
-            if not ans_now and (msg.get("think") or "").strip():
-                try:
-                    sys_prompt = (self.system_prompt or "").strip() + "\n\nReturn ONLY the final answer. No reasoning."
-                    hist = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": (self._last_context_prompt or self._last_user_text or "")}]
-                    if hasattr(self.tokenizer, "apply_chat_template"):
-                        final_prompt = self.tokenizer.apply_chat_template(hist, tokenize=False, add_generation_prompt=True)
+            msgs = self.chat_ui.get(pending_chat, [])
+            msg = msgs[int(pending_idx)] if (0 <= int(pending_idx) < len(msgs)) else None
+            if msg is not None:
+                merged_think = (msg.get("think", "") or "").strip()
+                extracted_think, extracted_answer = self._extract_think_answer_from_text(msg.get("answer", ""))
+                if extracted_think:
+                    if merged_think:
+                        merged_think = (merged_think + "\n" + extracted_think).strip()
                     else:
-                        final_prompt = f"User: {(self._last_context_prompt or self._last_user_text or '')}\nAssistant: "
-                    self._final_pending = (pending_chat, pending_idx)
-                    self.gen_status_lbl.setText("Finalizing…")
-                    self._final_worker = FinalAnswerWorker(self.model, self.tokenizer, final_prompt, max_tokens=256)
-                    self._final_worker.finished.connect(self._on_final_answer_ready)
-                    self._final_worker.error.connect(self._on_final_answer_error)
-                    self._final_worker.start()
-                    self.render_chat(self.active_chat)
-                    return
-                except Exception:
-                    pass
+                        merged_think = extracted_think.strip()
+                    msg["think"] = merged_think
+                    msg["answer"] = extracted_answer
+                else:
+                    ans_now = (msg.get("answer", "") or "").strip()
+                    low = ans_now.lower()
+                    if low.startswith("the user ") or low.startswith("the user is ") or low.startswith("let me "):
+                        fallback = self._fallback_answer_from_user_text(getattr(self, "_last_user_text", ""))
+                        if fallback:
+                            msg["think"] = (ans_now or "")
+                            msg["answer"] = fallback
 
-            assistant_answer = msg.get("answer", "") or ""
-            self.chats[pending_chat].append({"role": "assistant", "content": assistant_answer})
+                ans_now = (msg.get("answer", "") or "").strip()
+                if ans_now and not msg.get("think") and (ans_now.lower().startswith("the user ") or ans_now.lower().startswith("let me ")):
+                    msg["think"] = ans_now
+                    msg["answer"] = ""
+                    ans_now = ""
+
+                if not ans_now and (msg.get("think") or "").strip():
+                    try:
+                        sys_prompt = (self.system_prompt or "").strip() + "\n\nReturn ONLY the final answer. No reasoning."
+                        hist = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": (self._last_context_prompt or self._last_user_text or "")}]
+                        if hasattr(self.tokenizer, "apply_chat_template"):
+                            final_prompt = self.tokenizer.apply_chat_template(hist, tokenize=False, add_generation_prompt=True)
+                        else:
+                            final_prompt = f"User: {(self._last_context_prompt or self._last_user_text or '')}\nAssistant: "
+                        self._final_pending = (pending_chat, pending_idx)
+                        self.gen_status_lbl.setText("Finalizing…")
+                        self._final_worker = FinalAnswerWorker(self.model, self.tokenizer, final_prompt, max_tokens=256)
+                        self._final_worker.finished.connect(self._on_final_answer_ready)
+                        self._final_worker.error.connect(self._on_final_answer_error)
+                        self._final_worker.start()
+                        self._schedule_render(pending_chat)
+                        return
+                    except Exception:
+                        pass
+
+                assistant_answer = msg.get("answer", "") or ""
+                self.chats.setdefault(pending_chat, [{"role": "system", "content": self.system_prompt}]).append(
+                    {"role": "assistant", "content": assistant_answer}
+                )
+            else:
+                pending_chat = None
+                pending_idx = None
         else:
-            self.chats[self.active_chat].append({"role": "assistant", "content": ""})
+            pass
         
         # Display metadata
         if pending_chat is not None and pending_idx is not None:
-            msg = self.chat_ui[pending_chat][pending_idx]
-            msg["meta"] = {"tps": float(tps), "tokens": int(tokens), "elapsed": float(ms)}
-            try:
-                self._persist_message(
-                    pending_chat,
-                    "assistant",
-                    assistant_answer,
-                    think=(msg.get("think", "") or ""),
-                    thought_s=msg.get("thought_s"),
-                    meta=msg.get("meta") if isinstance(msg.get("meta"), dict) else None,
-                )
-            except Exception:
-                pass
+            msgs = self.chat_ui.get(pending_chat, [])
+            if not (0 <= int(pending_idx) < len(msgs)):
+                pending_chat = None
+                pending_idx = None
+            else:
+                msg = msgs[int(pending_idx)]
+                msg["meta"] = {"tps": float(tps), "tokens": int(tokens), "elapsed": float(ms)}
+                try:
+                    self._persist_message(
+                        pending_chat,
+                        "assistant",
+                        assistant_answer,
+                        think=(msg.get("think", "") or ""),
+                        thought_s=msg.get("thought_s"),
+                        meta=msg.get("meta") if isinstance(msg.get("meta"), dict) else None,
+                    )
+                except Exception:
+                    pass
 
         self._pending_chat = None
         self._pending_msg_index = None
@@ -3888,7 +4034,7 @@ class ChatbotGUI(QWidget):
         self._final_worker = None
         self._pending_chat = None
         self._pending_msg_index = None
-        self.render_chat(self.active_chat)
+        self._schedule_render(chat_name)
         try:
             self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
         except Exception:
@@ -3913,7 +4059,10 @@ class ChatbotGUI(QWidget):
     def on_ai_error(self, err_msg):
         if self._pending_chat is not None and self._pending_msg_index is not None:
             try:
-                self.chat_ui[self._pending_chat].pop(self._pending_msg_index)
+                msgs = self.chat_ui.get(self._pending_chat, [])
+                idx = int(self._pending_msg_index)
+                if 0 <= idx < len(msgs):
+                    msgs.pop(idx)
             except Exception:
                 pass
             self._pending_chat = None

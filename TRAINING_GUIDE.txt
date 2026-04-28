@@ -23,8 +23,15 @@ C) RAG in 60 seconds
 4) Ask a question about a unique string inside those files.
 
 If indexing fails:
-- sentence-transformers + faiss must be installed.
-- PDF/DOCX/ZIM require extra optional libraries.
+- sentence-transformers + faiss-cpu must be installed.
+- PDF requires PyMuPDF (pymupdf / fitz).
+- DOCX requires python-docx.
+- ZIM requires either:
+  - libzim  (recommended on macOS), OR
+  - python-zim[all] (module name: pyzim)
+- JPG/PNG OCR requires:
+  - pillow + pytesseract, and
+  - system tesseract (macOS: brew install tesseract)
 
 D) Fine-tune (LoRA) in 60 seconds
 1) Dev sidebar → “Fine-tune”
