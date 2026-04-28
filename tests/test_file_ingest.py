@@ -16,16 +16,20 @@ class TestFileIngest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p1 = os.path.join(td, "a.py")
             p2 = os.path.join(td, "b.cpp")
+            p4 = os.path.join(td, "c.ino")
             p3 = os.path.join(td, "c.unknown")
             with open(p1, "w", encoding="utf-8") as f:
                 f.write("print('x')\n")
             with open(p2, "w", encoding="utf-8") as f:
                 f.write("int main() {}\n")
+            with open(p4, "w", encoding="utf-8") as f:
+                f.write("void setup() {}\n")
             with open(p3, "w", encoding="utf-8") as f:
                 f.write("nope\n")
             paths = file_ingest.iter_files(td, recursive=False)
             self.assertIn(os.path.abspath(p1), paths)
             self.assertIn(os.path.abspath(p2), paths)
+            self.assertIn(os.path.abspath(p4), paths)
             self.assertNotIn(os.path.abspath(p3), paths)
 
     def test_extract_text_plain(self):
@@ -39,4 +43,3 @@ class TestFileIngest(unittest.TestCase):
     def test_extract_text_missing_returns_empty(self):
         out = file_ingest.extract_text("/no/such/file.xyz")
         self.assertEqual(out, "")
-

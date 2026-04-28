@@ -1108,7 +1108,7 @@ class DevPanelDialog(QWidget):
         i_layout = QGridLayout()
         i_layout.addWidget(QLabel("Folder:"), 0, 0)
         self.ft_ingest_folder = QLineEdit()
-        self.ft_ingest_folder.setPlaceholderText("Select a folder containing .py/.cpp/.html/.pdf/.zim/.jpg files...")
+        self.ft_ingest_folder.setPlaceholderText("Select a folder containing .zim and code/docs/images (.py/.cpp/.ino/.html/.pdf/.png/.jpg)...")
         i_layout.addWidget(self.ft_ingest_folder, 0, 1)
         pick_btn = QPushButton("Browse")
         pick_btn.clicked.connect(self.browse_finetune_ingest_folder)

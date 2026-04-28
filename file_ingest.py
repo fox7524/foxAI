@@ -47,7 +47,7 @@ except Exception:
 
 
 DEFAULT_EXT_GLOBS = [
-    "*.py", "*.cpp", "*.c", "*.h", "*.hpp",
+    "*.py", "*.cpp", "*.c", "*.h", "*.hpp", "*.ino",
     "*.html", "*.htm", "*.css", "*.js", "*.ts",
     "*.md", "*.txt", "*.json", "*.xml", "*.yaml", "*.yml",
     "*.pdf", "*.docx", "*.doc", "*.zim",

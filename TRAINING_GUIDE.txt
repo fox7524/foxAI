@@ -78,6 +78,25 @@ Option A — JSONL (recommended for quick start)
    - Folder mode works if it contains train.jsonl + valid.jsonl.
 3) Paste the path (or use the UI picker if present).
 
+Option A.1 — Build JSONL from your files (this is how you “train with .zim/.py/.pdf/.jpg/.png/.html/.cpp/.ino”)
+1) In the Fine-tune tab, find “Build Training Dataset From Files”.
+2) Click “Browse” and select a folder that contains your files (you can point at a folder that contains .zim + your code archive).
+3) Click “Export JSONL Dataset (train/valid)”.
+4) When it finishes, you get an output folder under:
+   lora_data/ingested_export/
+5) Set the JSONL path field to that output folder and start training.
+
+Supported formats for this export:
+- Source/code/text: .py .cpp .c .h .hpp .ino .html .htm .css .js .ts .md .txt .json .xml .yaml .yml
+- Docs: .pdf .docx .doc
+- Wiki archives: .zim (needs libzim or python-zim)
+- Images: .jpg/.jpeg/.png/.webp/.bmp/.tif/.tiff (needs OCR stack)
+
+Important notes:
+- Images require OCR: pillow + pytesseract + system tesseract (macOS: brew install tesseract).
+- If OCR libs are missing, images will be skipped (export still works for the other files).
+- ZIM files can be huge; exporting a full wiki into training text can create a very large dataset and take a long time.
+
 What the app will accept:
 - Proper JSONL: each line is a valid JSON object.
 - Plain text lines: the app auto-converts each line into:
