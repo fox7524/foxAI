@@ -68,6 +68,7 @@ import psutil
 import sqlite3
 import tempfile
 import zipfile
+import libzim
 import urllib.request
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit, QLineEdit,
