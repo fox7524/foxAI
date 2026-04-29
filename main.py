@@ -1019,6 +1019,9 @@ class DevPanelDialog(QWidget):
         self.rag_chunks_lbl.setText(f"{int(chunk_count)} chunks indexed")
         self.rag_index_lbl.setText(f"Index: {int(chunk_count) if ok else 'None'}")
         self.rag_status_lbl.setText("Active" if ok else "No data")
+        if not ok:
+            QMessageBox.warning(self, "Indexing Result", f"No data indexed from: {folder}\n\nIf this is a ZIM folder, ensure ZIM backends are working (libzim or python-zim).")
+            return
         QMessageBox.information(self, "Indexing Complete", f"Folder indexed: {folder}\nChunks: {int(chunk_count)}")
 
     def _on_docs_index_finished(self, ok: bool, chunk_count: int, err: str):

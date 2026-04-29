@@ -124,9 +124,16 @@ class RAGEngine:
         # This list is parallel to the FAISS index:
         # - self.documents[0] corresponds to vector at index 0 in FAISS
         self.documents: List[str] = []
+        self.last_error: str = ""
 
         # Load existing index if available (persistent across restarts)
         self.load_index()
+
+    def _set_last_error(self, msg: str) -> None:
+        try:
+            self.last_error = (msg or "").strip()
+        except Exception:
+            pass
 
     def load_index(self) -> None:
         """
@@ -318,83 +325,107 @@ class RAGEngine:
         """
         text_parts = []
         try:
+            pyzim_err = None
+            pyzim_mod = None
             try:
-                import pyzim  # published on PyPI as python-zim
-            except Exception:
-                pyzim = None
+                import pyzim as _pyzim  # published on PyPI as python-zim
+                pyzim_mod = _pyzim
+            except Exception as e:
+                pyzim_err = str(e)
 
-            if pyzim is not None:
-                with pyzim.Zim.open(file_path) as zf:
-                    it = None
-                    if hasattr(zf, "iter_entries"):
-                        it = zf.iter_entries()
-                    elif hasattr(zf, "iter_content_entries"):
-                        it = zf.iter_content_entries()
-                    elif hasattr(zf, "entries"):
-                        it = getattr(zf, "entries")
-                    if it is None:
-                        return ""
-
-                    for entry in it:
-                        title = (getattr(entry, "title", "") or "").strip()
-                        mimetype = (getattr(entry, "mimetype", "") or "").lower()
-                        if not title:
-                            continue
-                        if title.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp")):
-                            continue
-                        if mimetype and not mimetype.startswith("text/"):
-                            continue
-                        try:
-                            content = entry.read()
-                            if isinstance(content, bytes):
-                                content = content.decode("utf-8", errors="ignore")
-                            content = (content or "").strip()
-                        except Exception:
-                            content = ""
-                        if content:
-                            text_parts.append(f"## {title}\n\n{content}")
-                        if len(text_parts) >= 200:
-                            break
-                return "\n\n".join(text_parts)
-
+            libzim_err = None
+            LibZimArchive = None
             try:
-                from libzim.reader import Archive as LibZimArchive
-            except Exception:
-                LibZimArchive = None
+                from libzim.reader import Archive as _LibZimArchive
+                LibZimArchive = _LibZimArchive
+            except Exception as e:
+                libzim_err = str(e)
 
             if LibZimArchive is not None:
-                zf = LibZimArchive(file_path)
-                n = getattr(zf, "entry_count", None)
-                if callable(n):
-                    n = n()
-                if not isinstance(n, int):
-                    n = 0
-                for i in range(min(n, 500)):
-                    try:
-                        entry = None
-                        if hasattr(zf, "get_entry_by_id"):
-                            entry = zf.get_entry_by_id(i)
-                        elif hasattr(zf, "get_entry"):
-                            entry = zf.get_entry(i)
-                        if entry is None:
+                try:
+                    zf = LibZimArchive(file_path)
+                    n = getattr(zf, "entry_count", None)
+                    if callable(n):
+                        n = n()
+                    if not isinstance(n, int):
+                        n = 0
+                    for i in range(min(n, 500)):
+                        try:
+                            entry = None
+                            if hasattr(zf, "get_entry_by_id"):
+                                entry = zf.get_entry_by_id(i)
+                            elif hasattr(zf, "get_entry"):
+                                entry = zf.get_entry(i)
+                            if entry is None:
+                                continue
+                            title = (getattr(entry, "title", "") or "").strip()
+                            if not title:
+                                continue
+                            item = entry.get_item() if hasattr(entry, "get_item") else None
+                            raw = bytes(item.content) if (item is not None and hasattr(item, "content")) else b""
+                            content = raw.decode("utf-8", errors="ignore").strip()
+                            if content:
+                                text_parts.append(f"## {title}\n\n{content}")
+                            if len(text_parts) >= 200:
+                                break
+                        except Exception:
                             continue
-                        title = (getattr(entry, "title", "") or "").strip()
-                        if not title:
-                            continue
-                        item = entry.get_item() if hasattr(entry, "get_item") else None
-                        raw = bytes(item.content) if (item is not None and hasattr(item, "content")) else b""
-                        content = raw.decode("utf-8", errors="ignore").strip()
-                        if content:
-                            text_parts.append(f"## {title}\n\n{content}")
-                        if len(text_parts) >= 200:
-                            break
-                    except Exception:
-                        continue
-                return "\n\n".join(text_parts)
+                    return "\n\n".join(text_parts)
+                except Exception as e:
+                    self._set_last_error(f"ZIM (libzim) read failed: {e}")
+                    return ""
 
-            print("[RAG] ZIM support not available. Install: pip install 'python-zim[all]' OR pip install libzim")
+            if pyzim_mod is not None:
+                try:
+                    with pyzim_mod.Zim.open(file_path) as zf:
+                        it = None
+                        if hasattr(zf, "iter_entries"):
+                            it = zf.iter_entries()
+                        elif hasattr(zf, "iter_content_entries"):
+                            it = zf.iter_content_entries()
+                        elif hasattr(zf, "entries"):
+                            it = getattr(zf, "entries")
+                        if it is None:
+                            self._set_last_error("ZIM (pyzim) could not iterate entries (unsupported API).")
+                            return ""
+
+                        for entry in it:
+                            title = (getattr(entry, "title", "") or "").strip()
+                            mimetype = (getattr(entry, "mimetype", "") or "").lower()
+                            if not title:
+                                continue
+                            if title.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp")):
+                                continue
+                            if mimetype and not mimetype.startswith("text/"):
+                                continue
+                            try:
+                                content = entry.read()
+                                if isinstance(content, bytes):
+                                    content = content.decode("utf-8", errors="ignore")
+                                content = (content or "").strip()
+                            except Exception:
+                                content = ""
+                            if content:
+                                text_parts.append(f"## {title}\n\n{content}")
+                            if len(text_parts) >= 200:
+                                break
+                    return "\n\n".join(text_parts)
+                except Exception as e:
+                    self._set_last_error(f"ZIM (pyzim) read failed: {e}")
+                    return ""
+
+            detail = []
+            if libzim_err:
+                detail.append(f"libzim import error: {libzim_err}")
+            if pyzim_err:
+                detail.append(f"pyzim import error: {pyzim_err}")
+            msg = "ZIM support not available. Install: pip install libzim OR pip install 'python-zim[all]'."
+            if detail:
+                msg += " " + " | ".join(detail)
+            self._set_last_error(msg)
             return ""
         except Exception as e:
+            self._set_last_error(f"ZIM extraction error: {e}")
             print(f"[RAG] ZIM extraction error for {file_path}: {e}")
             return ""
 
@@ -493,6 +524,7 @@ class RAGEngine:
         # Get lowercase file extension (e.g., '.pdf')
         ext = os.path.splitext(file_path)[1].lower()
 
+        self._set_last_error("")
         # Route to appropriate extractor based on file type
         try:
             if ext == '.pdf':
@@ -536,6 +568,7 @@ class RAGEngine:
             return []
 
         except Exception as e:
+            self._set_last_error(f"Error processing {file_path}: {e}")
             print(f"[RAG] Error processing {file_path}: {e}")
             return []
 
@@ -563,46 +596,59 @@ class RAGEngine:
         if not self.enabled:
             return False
 
-        # Process all files to get chunks
-        all_chunks = []
+        added = 0
+        failures: List[str] = []
+        pending_save = 0
+
+        def encode_batch(texts: List[str]):
+            try:
+                return self.embedding_model.encode(texts, batch_size=32, show_progress_bar=False)
+            except TypeError:
+                return self.embedding_model.encode(texts)
+
         for path in file_paths:
             chunks = self.process_file(path)
-            all_chunks.extend(chunks)
+            if not chunks:
+                ext = os.path.splitext(path)[1].lower()
+                if ext == ".zim":
+                    le = getattr(self, "last_error", "") or ""
+                    if le:
+                        failures.append(f"{os.path.basename(path)}: {le}")
+                continue
 
-        if not all_chunks:
-            print("[RAG] No content extracted from files.")
-            return False
+            ext = os.path.splitext(path)[1].lower()
+            max_per_file = 2500 if ext == ".zim" else 1200
+            if len(chunks) > max_per_file:
+                chunks = chunks[:max_per_file]
 
-        # Create embeddings for all chunks at once
-        # Batch processing is MUCH faster than individual embeddings
-        # Sentence-transformers handles batching internally
-        print(f"[RAG] Creating embeddings for {len(all_chunks)} chunks...")
-        embeddings = self.embedding_model.encode(all_chunks)
+            for i in range(0, len(chunks), 128):
+                batch = chunks[i:i + 128]
+                if not batch:
+                    continue
+                emb = encode_batch(batch)
+                emb = np.array(emb).astype("float32")
+                if emb.ndim != 2 or emb.shape[0] != len(batch):
+                    raise RuntimeError("Embedding model returned invalid shape.")
+                dim = int(emb.shape[1])
+                if self.index is None:
+                    self.index = faiss.IndexFlatL2(dim)
+                self.index.add(emb)
+                self.documents.extend(batch)
+                added += len(batch)
+                pending_save += len(batch)
+                if pending_save >= 2000:
+                    self.save_index()
+                    pending_save = 0
 
-        # Convert to numpy array with float32 (FAISS requirement)
-        embeddings = np.array(embeddings).astype('float32')
+        if added <= 0:
+            msg = "No content extracted from files."
+            if failures:
+                msg += "\n\n" + "\n".join(failures[:6])
+            raise RuntimeError(msg)
 
-        # Get embedding dimension (e.g., 384 for all-MiniLM-L6-v2)
-        dimension = embeddings.shape[1]
+        if pending_save > 0:
+            self.save_index()
 
-        # Initialize FAISS index if not exists
-        # IndexFlatL2: brute-force search, exact results
-        # L2 = Euclidean distance (straight-line distance in embedding space)
-        if self.index is None:
-            self.index = faiss.IndexFlatL2(dimension)
-            print(f"[RAG] Created new FAISS index (dim={dimension})")
-
-        # Add all vectors to index
-        # This is the bulk insertion - O(n) operation
-        self.index.add(embeddings)
-
-        # Store original chunks (parallel to index)
-        self.documents.extend(all_chunks)
-
-        # Persist to disk
-        self.save_index()
-
-        print(f"[RAG] Indexed {len(all_chunks)} chunks. Total: {len(self.documents)}")
         return True
 
     def ingest_folder(self, folder_path: str, recursive: bool = True) -> bool:
@@ -629,7 +675,7 @@ class RAGEngine:
             '*.jpg', '*.jpeg', '*.png', '*.webp', '*.bmp', '*.tif', '*.tiff',
             '*.py', '*.cpp', '*.c', '*.h', '*.hpp', '*.js', '*.ts',
             '*.html', '*.htm', '*.css', '*.txt', '*.md',
-            '*.json', '*.xml', '*.yaml', '*.yml', '*.sh',
+            '*.json', '*.xml', '*.yaml', '*.yml', '*.sh', '*.ino',
         ]
 
         for ext in extensions:
