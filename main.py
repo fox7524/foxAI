@@ -1017,13 +1017,18 @@ class DevPanelDialog(QWidget):
             self.rag_status_lbl.setText("Error")
             QMessageBox.critical(self, "Indexing Error", err)
             return
+        try:
+            eng = self.main_app.get_rag_engine() if self.main_app else None
+            idx_folder = getattr(eng, "indexed_folder", "") if eng else ""
+        except Exception:
+            idx_folder = ""
         self.rag_chunks_lbl.setText(f"{int(chunk_count)} chunks indexed")
-        self.rag_index_lbl.setText(f"Index: {int(chunk_count) if ok else 'None'}")
+        self.rag_index_lbl.setText(f"Index Folder: {idx_folder or 'None'}")
         self.rag_status_lbl.setText("Active" if ok else "No data")
         if not ok:
             QMessageBox.warning(self, "Indexing Result", f"No data indexed from: {folder}\n\nIf this is a ZIM folder, ensure ZIM backends are working (libzim or python-zim).")
             return
-        QMessageBox.information(self, "Indexing Complete", f"Folder indexed: {folder}\nChunks: {int(chunk_count)}")
+        QMessageBox.information(self, "Indexing Complete", f"Folder indexed: {folder}\nChunks: {int(chunk_count)}\n\nThis index is saved and will persist after restart until you index a different folder.")
 
     def _on_docs_index_finished(self, ok: bool, chunk_count: int, err: str):
         if hasattr(self, "_rag_docs_btn") and self._rag_docs_btn is not None:
@@ -1042,7 +1047,7 @@ class DevPanelDialog(QWidget):
             self.main_app.rag_engine.reset_database()
             self.rag_status_lbl.setText("Disabled")
             self.rag_chunks_lbl.setText("0 chunks indexed")
-            self.rag_index_lbl.setText("Index: None")
+            self.rag_index_lbl.setText("Index Folder: None")
             QMessageBox.information(self, "Reset Complete", "RAG index has been reset.")
     
     def build_finetune_tab(self):
@@ -1480,6 +1485,11 @@ class DevPanelDialog(QWidget):
         load_btn.setStyleSheet("background-color: #1a3a5c; color: #4d9fff;")
         load_btn.clicked.connect(self.load_selected_model)
         layout.addWidget(load_btn)
+
+        unload_btn = QPushButton("Unload Model")
+        unload_btn.setStyleSheet("background-color: #5c1a2a; border-color: #ff4d6a; color: #ff4d6a;")
+        unload_btn.clicked.connect(self.unload_current_model)
+        layout.addWidget(unload_btn)
         
         self.model_status = QLabel("No model loaded")
         self.model_status.setStyleSheet("color: #888; padding: 8px;")
@@ -1537,6 +1547,14 @@ class DevPanelDialog(QWidget):
         self.model_status.setText(f"Error: {err}")
         self.model_status.setStyleSheet("color: #ff4d6a; padding: 8px;")
         QMessageBox.critical(self, "Load Error", f"Failed to load model:\n{err}")
+
+    def unload_current_model(self) -> None:
+        if not self.main_app:
+            return
+        self.main_app.unload_model()
+        self.model_status.setText("No model loaded")
+        self.model_status.setStyleSheet("color: #888; padding: 8px;")
+        QMessageBox.information(self, "Model", "Model unloaded.")
     
     def build_testing_tab(self):
         widget = QWidget()
@@ -2105,7 +2123,8 @@ class ChatbotGUI(QWidget):
             self.rag_engine = None
             return None
         try:
-            self.rag_engine = RAGEngine()
+            rag_dir = os.path.join(os.path.expanduser("~"), ".lokumai", "rag")
+            self.rag_engine = RAGEngine(storage_dir=rag_dir)
         except Exception:
             self.rag_engine = None
         return self.rag_engine
@@ -2276,6 +2295,18 @@ class ChatbotGUI(QWidget):
         self.service_status_lbl = QLabel("Service: starting…")
         self.service_status_lbl.setObjectName("ServiceStatus")
         h_layout.addWidget(self.service_status_lbl)
+        
+        self.model_load_btn = QPushButton("Load")
+        self.model_load_btn.setObjectName("ModelLoadButton")
+        self.model_load_btn.setFixedSize(62, 28)
+        self.model_load_btn.clicked.connect(self.load_model_via_picker)
+        h_layout.addWidget(self.model_load_btn)
+
+        self.model_unload_btn = QPushButton("Unload")
+        self.model_unload_btn.setObjectName("ModelUnloadButton")
+        self.model_unload_btn.setFixedSize(70, 28)
+        self.model_unload_btn.clicked.connect(self.unload_model)
+        h_layout.addWidget(self.model_unload_btn)
         h_layout.addStretch()
 
         self.dev_toggle_btn = QPushButton("Dev")
@@ -2994,6 +3025,61 @@ class ChatbotGUI(QWidget):
         self.send_btn.setEnabled(enabled)
         if enabled:
             self.input_field.setFocus()
+
+    def load_model_via_picker(self) -> None:
+        try:
+            if getattr(self, "model_loader", None) is not None and self.model_loader.isRunning():
+                QMessageBox.information(self, "Model", "Model is already loading.")
+                return
+        except Exception:
+            pass
+
+        if getattr(self, "model", None) is not None or getattr(self, "tokenizer", None) is not None:
+            res = QMessageBox.question(self, "Load Model", "A model is already loaded. Unload and load a new one?", QMessageBox.Yes | QMessageBox.No)
+            if res != QMessageBox.Yes:
+                return
+            self.unload_model()
+
+        path = QFileDialog.getExistingDirectory(self, "Select MLX Model Folder")
+        if not path:
+            path = self._find_default_model_path()
+        if not path or not os.path.isdir(path):
+            QMessageBox.warning(self, "Load Model", "Model folder not selected or invalid.")
+            return
+
+        self._set_chat_enabled(False)
+        self.service_status_lbl.setText("Service: loading…")
+        self.model_loader = ModelLoaderWorker(path)
+        self.model_loader.loaded.connect(self._on_model_loaded)
+        self.model_loader.error.connect(self._on_model_load_error)
+        self.model_loader.start()
+
+    def unload_model(self) -> None:
+        try:
+            self.stop_generation()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "worker", None) is not None and self.worker.isRunning():
+                self.worker.stop()
+        except Exception:
+            pass
+
+        self.model = None
+        self.tokenizer = None
+        self._set_chat_enabled(False)
+        self.service_status_lbl.setText("Service: unloaded")
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+        try:
+            import mlx.core as mx  # type: ignore
+            if hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+                mx.metal.clear_cache()
+        except Exception:
+            pass
 
     def _find_default_model_path(self) -> str:
         if self.current_model_path and os.path.isdir(self.current_model_path):

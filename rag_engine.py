@@ -23,6 +23,7 @@ USAGE:
 
 import os
 import glob
+import json
 import numpy as np
 from typing import List, Dict, Any, Optional
 
@@ -71,9 +72,10 @@ except ImportError:
     HAS_TESSERACT = False
     print("Warning: pytesseract not installed. Run: pip install pytesseract (also requires 'tesseract' installed on your OS)")
 
-# File paths where we persist our FAISS index and document metadata
-INDEX_PATH = "./faiss_index.bin"       # Stores the FAISS index (vectors)
-DOCS_PATH = "./docs_metadata.npy"      # Stores the original text chunks
+DEFAULT_RAG_DIR = os.path.join(os.path.expanduser("~"), ".lokumai", "rag")
+DEFAULT_INDEX_NAME = "faiss_index.bin"
+DEFAULT_DOCS_NAME = "docs_metadata.npy"
+DEFAULT_META_NAME = "rag_meta.json"
 
 # ============================================================================
 # RAG ENGINE CLASS
@@ -93,7 +95,7 @@ class RAGEngine:
     - Faster for our specific use case
     """
 
-    def __init__(self):
+    def __init__(self, storage_dir: str | None = None):
         # Check if we have all required dependencies
         global SentenceTransformer, HAS_SENTENCE_TRANSFORMERS
         if not HAS_SENTENCE_TRANSFORMERS:
@@ -109,6 +111,13 @@ class RAGEngine:
         self.enabled = bool(HAS_SENTENCE_TRANSFORMERS and HAS_FAISS)
         if not self.enabled:
             return
+
+        self.storage_dir = os.path.abspath(storage_dir or DEFAULT_RAG_DIR)
+        os.makedirs(self.storage_dir, exist_ok=True)
+        self.index_path = os.path.join(self.storage_dir, DEFAULT_INDEX_NAME)
+        self.docs_path = os.path.join(self.storage_dir, DEFAULT_DOCS_NAME)
+        self.meta_path = os.path.join(self.storage_dir, DEFAULT_META_NAME)
+        self.indexed_folder: str = ""
 
         # Load the embedding model
         # This model is downloaded on first use (~90MB) and cached
@@ -148,20 +157,32 @@ class RAGEngine:
         - Creating embeddings is slow (one forward pass per chunk)
         - We only need to do it once, then reuse the index
         """
-        if os.path.exists(INDEX_PATH) and os.path.exists(DOCS_PATH):
+        meta_folder = ""
+        try:
+            if os.path.exists(self.meta_path):
+                with open(self.meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f) or {}
+                meta_folder = str(meta.get("folder") or "").strip()
+        except Exception:
+            meta_folder = ""
+
+        if os.path.exists(self.index_path) and os.path.exists(self.docs_path):
             try:
                 # Read FAISS index from binary file
-                self.index = faiss.read_index(INDEX_PATH)
+                self.index = faiss.read_index(self.index_path)
 
                 # Read document chunks from numpy file
                 # allow_pickle=True needed because numpy can't store plain lists
-                self.documents = np.load(DOCS_PATH, allow_pickle=True).tolist()
+                self.documents = np.load(self.docs_path, allow_pickle=True).tolist()
+                self.indexed_folder = meta_folder
 
                 print(f"[RAG] Loaded index with {len(self.documents)} chunks.")
             except Exception as e:
                 print(f"[RAG] Error loading index: {e}")
                 # Reset to empty state if loading fails
                 self.index = None
+                self.documents = []
+                self.indexed_folder = ""
 
     def save_index(self) -> None:
         """
@@ -176,11 +197,16 @@ class RAGEngine:
         """
         if self.index is not None:
             # Write FAISS index to binary file
-            faiss.write_index(self.index, INDEX_PATH)
+            faiss.write_index(self.index, self.index_path)
 
             # Save document chunks as numpy array
             # dtype=object needed for list of strings
-            np.save(DOCS_PATH, np.array(self.documents, dtype=object))
+            np.save(self.docs_path, np.array(self.documents, dtype=object))
+            try:
+                with open(self.meta_path, "w", encoding="utf-8") as f:
+                    json.dump({"folder": self.indexed_folder}, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
 
             print(f"[RAG] Saved {len(self.documents)} chunks to index.")
 
@@ -349,7 +375,32 @@ class RAGEngine:
                         n = n()
                     if not isinstance(n, int):
                         n = 0
-                    for i in range(min(n, 500)):
+                    scanned = 0
+                    kept = 0
+                    skipped_ns = 0
+                    skipped_nontext = 0
+                    skipped_resource = 0
+                    read_fail = 0
+
+                    def is_article_entry(entry) -> bool:
+                        ns = getattr(entry, "namespace", None)
+                        if isinstance(ns, str) and ns:
+                            return ns.upper() == "A"
+                        url = ""
+                        for key in ("url", "path", "full_url"):
+                            v = getattr(entry, key, None)
+                            if isinstance(v, str) and v:
+                                url = v
+                                break
+                        if url:
+                            low = url.lower()
+                            if low.startswith("a/") or low.startswith("a:") or low.startswith("a"):
+                                return True
+                            return False
+                        return True
+
+                    max_scan = min(max(500, n), 20000) if n > 0 else 20000
+                    for i in range(max_scan):
                         try:
                             entry = None
                             if hasattr(zf, "get_entry_by_id"):
@@ -358,19 +409,38 @@ class RAGEngine:
                                 entry = zf.get_entry(i)
                             if entry is None:
                                 continue
+                            scanned += 1
                             title = (getattr(entry, "title", "") or "").strip()
                             if not title:
+                                continue
+                            if not is_article_entry(entry):
+                                skipped_ns += 1
+                                continue
+                            mimetype = (getattr(entry, "mimetype", "") or "").lower()
+                            if title.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp")):
+                                skipped_resource += 1
+                                continue
+                            if mimetype and not mimetype.startswith("text/") and "xml" not in mimetype and "html" not in mimetype:
+                                skipped_nontext += 1
                                 continue
                             item = entry.get_item() if hasattr(entry, "get_item") else None
                             raw = bytes(item.content) if (item is not None and hasattr(item, "content")) else b""
                             content = raw.decode("utf-8", errors="ignore").strip()
                             if content:
                                 text_parts.append(f"## {title}\n\n{content}")
+                                kept += 1
                             if len(text_parts) >= 200:
                                 break
                         except Exception:
+                            read_fail += 1
                             continue
-                    return "\n\n".join(text_parts)
+                    out = "\n\n".join(text_parts).strip()
+                    if out:
+                        return out
+                    self._set_last_error(
+                        f"ZIM (libzim) extracted 0 text entries (scanned={scanned}, skipped_ns={skipped_ns}, skipped_nontext={skipped_nontext}, skipped_resource={skipped_resource}, read_fail={read_fail})."
+                    )
+                    return ""
                 except Exception as e:
                     self._set_last_error(f"ZIM (libzim) read failed: {e}")
                     return ""
@@ -389,14 +459,39 @@ class RAGEngine:
                             self._set_last_error("ZIM (pyzim) could not iterate entries (unsupported API).")
                             return ""
 
+                        scanned = 0
+                        kept = 0
+                        skipped_ns = 0
+                        skipped_nontext = 0
+                        skipped_resource = 0
+                        read_fail = 0
+
+                        def is_article_entry(entry) -> bool:
+                            ns = getattr(entry, "namespace", None)
+                            if isinstance(ns, str) and ns:
+                                return ns.upper() == "A"
+                            url = getattr(entry, "url", None)
+                            if isinstance(url, str) and url:
+                                low = url.lower()
+                                if low.startswith("a/") or low.startswith("a:") or low.startswith("a"):
+                                    return True
+                                return False
+                            return True
+
                         for entry in it:
+                            scanned += 1
                             title = (getattr(entry, "title", "") or "").strip()
                             mimetype = (getattr(entry, "mimetype", "") or "").lower()
                             if not title:
                                 continue
+                            if not is_article_entry(entry):
+                                skipped_ns += 1
+                                continue
                             if title.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp")):
+                                skipped_resource += 1
                                 continue
                             if mimetype and not mimetype.startswith("text/"):
+                                skipped_nontext += 1
                                 continue
                             try:
                                 content = entry.read()
@@ -404,12 +499,20 @@ class RAGEngine:
                                     content = content.decode("utf-8", errors="ignore")
                                 content = (content or "").strip()
                             except Exception:
+                                read_fail += 1
                                 content = ""
                             if content:
                                 text_parts.append(f"## {title}\n\n{content}")
+                                kept += 1
                             if len(text_parts) >= 200:
                                 break
-                    return "\n\n".join(text_parts)
+                    out = "\n\n".join(text_parts).strip()
+                    if out:
+                        return out
+                    self._set_last_error(
+                        f"ZIM (pyzim) extracted 0 text entries (scanned={scanned}, skipped_ns={skipped_ns}, skipped_nontext={skipped_nontext}, skipped_resource={skipped_resource}, read_fail={read_fail})."
+                    )
+                    return ""
                 except Exception as e:
                     self._set_last_error(f"ZIM (pyzim) read failed: {e}")
                     return ""
@@ -612,8 +715,7 @@ class RAGEngine:
                 ext = os.path.splitext(path)[1].lower()
                 if ext == ".zim":
                     le = getattr(self, "last_error", "") or ""
-                    if le:
-                        failures.append(f"{os.path.basename(path)}: {le}")
+                    failures.append(f"{os.path.basename(path)}: {le or 'No text extracted from this ZIM.'}")
                 continue
 
             ext = os.path.splitext(path)[1].lower()
@@ -666,6 +768,14 @@ class RAGEngine:
             print(f"[RAG] Invalid folder: {folder_path}")
             return False
 
+        folder_abs = os.path.abspath(folder_path)
+        if self.indexed_folder and os.path.abspath(self.indexed_folder) != folder_abs:
+            self.reset_database()
+        if not self.indexed_folder:
+            self.indexed_folder = folder_abs
+        if os.path.abspath(self.indexed_folder) == folder_abs and self.index is not None and self.documents:
+            return True
+
         # Collect all files we can process
         file_paths = []
 
@@ -680,13 +790,13 @@ class RAGEngine:
 
         for ext in extensions:
             if recursive:
-                pattern = os.path.join(folder_path, '**', ext)
+                pattern = os.path.join(folder_abs, '**', ext)
                 file_paths.extend(glob.glob(pattern, recursive=True))
             else:
-                pattern = os.path.join(folder_path, ext)
+                pattern = os.path.join(folder_abs, ext)
                 file_paths.extend(glob.glob(pattern))
 
-        print(f"[RAG] Found {len(file_paths)} files in {folder_path}")
+        print(f"[RAG] Found {len(file_paths)} files in {folder_abs}")
         return self.ingest_documents(file_paths)
 
     # =========================================================================
@@ -803,7 +913,8 @@ class RAGEngine:
                 "chunk_count": 0,
                 "index_size": 0,
                 "embedding_dim": 0,
-                "indexed": False
+                "indexed": False,
+                "folder": self.indexed_folder,
             }
 
         return {
@@ -811,7 +922,8 @@ class RAGEngine:
             "chunk_count": len(self.documents),
             "index_size": self.index.ntotal,
             "embedding_dim": self.index.d if hasattr(self.index, 'd') else 384,
-            "indexed": True
+            "indexed": True,
+            "folder": self.indexed_folder,
         }
 
     def reset_database(self) -> None:
@@ -822,14 +934,26 @@ class RAGEngine:
         Use with caution in production.
         """
         # Remove persisted files
-        if os.path.exists(INDEX_PATH):
-            os.remove(INDEX_PATH)
-        if os.path.exists(DOCS_PATH):
-            os.remove(DOCS_PATH)
+        try:
+            if os.path.exists(self.index_path):
+                os.remove(self.index_path)
+        except Exception:
+            pass
+        try:
+            if os.path.exists(self.docs_path):
+                os.remove(self.docs_path)
+        except Exception:
+            pass
+        try:
+            if os.path.exists(self.meta_path):
+                os.remove(self.meta_path)
+        except Exception:
+            pass
 
         # Clear in-memory data
         self.index = None
         self.documents = []
+        self.indexed_folder = ""
 
         print("[RAG] Index reset. All data cleared.")
 

@@ -22,6 +22,11 @@ C) RAG in 60 seconds
 3) Click “Index Project Files”
 4) Ask a question about a unique string inside those files.
 
+RAG persistence rule (IMPORTANT):
+- The RAG index is saved to disk and survives app restarts.
+- It stays active until you index a DIFFERENT folder path.
+- When you index a different folder, the old index is deleted and replaced.
+
 If indexing fails:
 - sentence-transformers + faiss-cpu must be installed.
 - PDF requires PyMuPDF (pymupdf / fitz).
@@ -44,6 +49,10 @@ D) Fine-tune (LoRA) in 60 seconds
 If training fails:
 - mlx_lm must be installed in the same Python environment as the app.
 - the base model path must be valid.
+
+Tip (RAM safety):
+- Use the top header buttons: Load / Unload
+- Unload the model before heavy RAG indexing or training to free memory.
 
 E) File locations you should know
 - Chat history DB (app uses this): app.db
@@ -359,6 +368,15 @@ Strategy B — Use LoRA fine-tuning for stable behavioral changes
   1) Prepare dataset (SQLite or JSONL)
   2) Start Training in Dev → Fine-tune
   3) Fuse adapter if needed, then load the new merged model from Dev → Model
+
+Strategy C — “Closed-book knowledge” (model knows it without lookup)
+- Meaning: the model answers from its weights only (no retrieval/index lookup at runtime).
+- Reality check:
+  - This requires training (continued pretraining or distillation) and is not guaranteed to “absorb” an entire multi-GB wiki reliably with LoRA.
+  - Large corpora (many ZIM files) are usually best handled with RAG for accuracy and stability.
+- Best practical approach in this app:
+  - Use RAG for the full ZIM archive.
+  - Optionally fine-tune LoRA to improve style + how the model uses retrieved context.
 
 Common best practice:
 - RAG for “facts/knowledge”
