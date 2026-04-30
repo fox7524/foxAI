@@ -64,11 +64,9 @@ import ast
 import re
 import glob
 import subprocess
-import psutil
 import sqlite3
 import tempfile
 import zipfile
-import libzim
 import urllib.request
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit, QLineEdit,
@@ -84,11 +82,44 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QSettings
 from PyQt5.QtGui import QFont, QTextCursor, QPalette, QColor, QTextCharFormat, QCursor
 
-# mlx_lm: Apple's MLX framework for local LLM inference
-# - load(): Load a model and tokenizer from a path
-# - generate(): Generate text (blocking)
-# - stream_generate(): Generate text with streaming (yields tokens)
-from mlx_lm import load, generate, stream_generate
+psutil = None
+HAS_PSUTIL = False
+PSUTIL_IMPORT_ERROR = ""
+try:
+    import psutil as _psutil  # type: ignore
+    psutil = _psutil
+    HAS_PSUTIL = True
+except Exception as e:
+    psutil = None
+    HAS_PSUTIL = False
+    PSUTIL_IMPORT_ERROR = str(e)
+
+HAS_LIBZIM = False
+LIBZIM_IMPORT_ERROR = ""
+try:
+    import libzim as _libzim  # type: ignore
+    HAS_LIBZIM = True
+except Exception as e:
+    HAS_LIBZIM = False
+    LIBZIM_IMPORT_ERROR = str(e)
+
+load = None
+generate = None
+stream_generate = None
+HAS_MLX_LM = False
+MLX_IMPORT_ERROR = ""
+try:
+    from mlx_lm import load as _load, generate as _generate, stream_generate as _stream_generate  # type: ignore
+    load = _load
+    generate = _generate
+    stream_generate = _stream_generate
+    HAS_MLX_LM = True
+except Exception as e:
+    load = None
+    generate = None
+    stream_generate = None
+    HAS_MLX_LM = False
+    MLX_IMPORT_ERROR = str(e)
 
 # RAG Engine: Handles document indexing and retrieval
 # Fine-tune Engine: Handles LoRA training
@@ -110,13 +141,15 @@ except Exception as e:
 try:
     from file_ingest import iter_files as ingest_iter_files
     from file_ingest import build_text_chunks_from_paths as ingest_build_chunks
-except Exception:
+    INGEST_IMPORT_ERROR = ""
+except Exception as e:
     ingest_iter_files = None
     ingest_build_chunks = None
+    INGEST_IMPORT_ERROR = str(e)
 
 # Application version and dev mode password
 VERSION = "LokumAI"
-DEV_MODE_PASSWORD = "123"
+DEV_MODE_PASSWORD = os.environ.get("LOKUMAI_DEV_PASSWORD", "123")
 
 # ---------------------------------------------------------
 # WORKER THREADS (Background Processing)
@@ -132,6 +165,8 @@ class ModelLoaderWorker(QThread):
 
     def run(self):
         try:
+            if load is None:
+                raise RuntimeError(MLX_IMPORT_ERROR or "mlx_lm is not available.")
             import warnings
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -228,6 +263,8 @@ class AIWorker(QThread):
         DO NOT call this directly - use start() instead.
         """
         try:
+            if stream_generate is None:
+                raise RuntimeError(MLX_IMPORT_ERROR or "mlx_lm is not available.")
             if self.model is None or self.tokenizer is None:
                 raise ValueError("Model or tokenizer is not loaded.")
             if getattr(self.tokenizer, "eos_token_id", None) is None:
@@ -302,6 +339,8 @@ class BenchmarkWorker(QThread):
 
     def run(self):
         try:
+            if generate is None:
+                raise RuntimeError(MLX_IMPORT_ERROR or "mlx_lm is not available.")
             if self.model is None or self.tokenizer is None:
                 raise ValueError("Model/tokenizer not loaded")
             start = time.time()
@@ -397,6 +436,8 @@ class FinalAnswerWorker(QThread):
 
     def run(self):
         try:
+            if generate is None:
+                raise RuntimeError(MLX_IMPORT_ERROR or "mlx_lm is not available.")
             if self.model is None or self.tokenizer is None:
                 raise ValueError("Model/tokenizer not loaded")
             out = generate(self.model, self.tokenizer, prompt=self.prompt, max_tokens=self.max_tokens)
@@ -413,6 +454,14 @@ class RagIndexWorker(QThread):
         self.main_app = main_app
         self.folder = folder
         self.recursive = bool(recursive)
+        self._eng = None
+
+    def stop(self):
+        try:
+            if self._eng is not None and hasattr(self._eng, "request_abort"):
+                self._eng.request_abort()
+        except Exception:
+            pass
 
     def run(self):
         try:
@@ -420,14 +469,30 @@ class RagIndexWorker(QThread):
                 self.finished.emit(False, 0, self.folder, "No main app")
                 return
             eng = self.main_app.get_rag_engine()
+            self._eng = eng
             if eng is None or not getattr(eng, "enabled", False):
                 self.finished.emit(False, 0, self.folder, "RAG engine not available")
                 return
+            try:
+                if hasattr(eng, "clear_abort"):
+                    eng.clear_abort()
+            except Exception:
+                pass
             ok = bool(eng.ingest_folder(self.folder, recursive=self.recursive))
             count = len(getattr(eng, "documents", []) or [])
             self.finished.emit(ok, int(count), self.folder, "")
         except Exception as e:
-            self.finished.emit(False, 0, self.folder, str(e))
+            msg = str(e)
+            if "aborted" in msg.lower():
+                count = 0
+                try:
+                    eng = self.main_app.get_rag_engine() if self.main_app else None
+                    count = len(getattr(eng, "documents", []) or []) if eng else 0
+                except Exception:
+                    count = 0
+                self.finished.emit(False, int(count), self.folder, "Aborted")
+                return
+            self.finished.emit(False, 0, self.folder, msg)
 
 
 class PythonDocsIndexWorker(QThread):
@@ -449,6 +514,11 @@ class PythonDocsIndexWorker(QThread):
             if eng is None or not getattr(eng, "enabled", False):
                 self.finished.emit(False, 0, "RAG engine not available")
                 return
+            try:
+                if hasattr(eng, "clear_abort"):
+                    eng.clear_abort()
+            except Exception:
+                pass
             url = self.url or "https://docs.python.org/3/archives/python-3.13.0-docs-text.zip"
             tmp_root = tempfile.mkdtemp(prefix="foxai_py_docs_")
             zip_path = os.path.join(tmp_root, "python-docs.zip")
@@ -533,6 +603,15 @@ class MemoryMonitor(QThread):
         Gets current process memory and system CPU percentage,
         then sleeps for 2 seconds before repeating.
         """
+        if psutil is None:
+            while not self.isInterruptionRequested():
+                try:
+                    self.update_signal.emit("N/A", "N/A", "N/A", "N/A")
+                except Exception:
+                    pass
+                self.msleep(2000)
+            return
+
         process = psutil.Process(os.getpid())
         while not self.isInterruptionRequested():
             try:
@@ -908,7 +987,9 @@ class DevPanelDialog(QWidget):
         
         self.rag_status_lbl = QLabel("Disabled")
         self.rag_chunks_lbl = QLabel("0 chunks indexed")
-        self.rag_index_lbl = QLabel("Index: None")
+        self.rag_index_lbl = QLabel("")
+        refresh_btn = QPushButton("Refresh Status")
+        refresh_btn.clicked.connect(self.refresh_rag_status)
         
         s_layout.addWidget(QLabel("Status:"), 0, 0)
         s_layout.addWidget(self.rag_status_lbl, 0, 1)
@@ -916,6 +997,7 @@ class DevPanelDialog(QWidget):
         s_layout.addWidget(self.rag_chunks_lbl, 1, 1)
         s_layout.addWidget(QLabel("Index Path:"), 2, 0)
         s_layout.addWidget(self.rag_index_lbl, 2, 1)
+        s_layout.addWidget(refresh_btn, 3, 0, 1, 3)
         status_box.setLayout(s_layout)
         layout.addWidget(status_box)
         
@@ -956,6 +1038,16 @@ class DevPanelDialog(QWidget):
         
         docs_box.setLayout(d_layout)
         layout.addWidget(docs_box)
+
+        manage_box = QGroupBox("Manage Indexed Data")
+        m_layout = QGridLayout()
+        abort_btn = QPushButton("EMERGENCY ABORT")
+        abort_btn.setStyleSheet("background-color: #5c1a2a; border-color: #ff4d6a; color: #ff4d6a; font-weight: bold;")
+        abort_btn.clicked.connect(self.abort_rag_operations)
+        m_layout.addWidget(abort_btn, 0, 0, 1, 3)
+
+        manage_box.setLayout(m_layout)
+        layout.addWidget(manage_box)
         
         # Reset
         reset_btn = QPushButton("Reset RAG Index")
@@ -964,6 +1056,7 @@ class DevPanelDialog(QWidget):
         layout.addWidget(reset_btn)
         
         layout.addStretch()
+        QTimer.singleShot(0, self.refresh_rag_status)
         return widget
     
     def browse_rag_folder(self):
@@ -988,6 +1081,12 @@ class DevPanelDialog(QWidget):
         self.rag_status_lbl.setText("Indexing…")
         if hasattr(self, "_rag_index_btn") and self._rag_index_btn is not None:
             self._rag_index_btn.setEnabled(False)
+        try:
+            eng = self.main_app.get_rag_engine() if self.main_app else None
+            if eng is not None and hasattr(eng, "clear_abort"):
+                eng.clear_abort()
+        except Exception:
+            pass
         self._rag_worker = RagIndexWorker(self.main_app, folder, recursive=True)
         self._rag_worker.finished.connect(self._on_rag_index_finished)
         self._rag_worker.start()
@@ -1013,6 +1112,11 @@ class DevPanelDialog(QWidget):
     def _on_rag_index_finished(self, ok: bool, chunk_count: int, folder: str, err: str):
         if hasattr(self, "_rag_index_btn") and self._rag_index_btn is not None:
             self._rag_index_btn.setEnabled(True)
+        if err == "Aborted":
+            self.rag_status_lbl.setText("Aborted")
+            self.rag_chunks_lbl.setText(f"{int(chunk_count)} chunks indexed")
+            QMessageBox.information(self, "RAG Aborted", "Indexing was aborted.")
+            return
         if err:
             self.rag_status_lbl.setText("Error")
             QMessageBox.critical(self, "Indexing Error", err)
@@ -1023,12 +1127,51 @@ class DevPanelDialog(QWidget):
         except Exception:
             idx_folder = ""
         self.rag_chunks_lbl.setText(f"{int(chunk_count)} chunks indexed")
-        self.rag_index_lbl.setText(f"Index Folder: {idx_folder or 'None'}")
+        rag_dir = os.path.join(os.path.expanduser("~"), ".lokumai", "rag")
+        self.rag_index_lbl.setText(f"Store: {rag_dir}")
         self.rag_status_lbl.setText("Active" if ok else "No data")
         if not ok:
             QMessageBox.warning(self, "Indexing Result", f"No data indexed from: {folder}\n\nIf this is a ZIM folder, ensure ZIM backends are working (libzim or python-zim).")
             return
-        QMessageBox.information(self, "Indexing Complete", f"Folder indexed: {folder}\nChunks: {int(chunk_count)}\n\nThis index is saved and will persist after restart until you index a different folder.")
+        QMessageBox.information(self, "Indexing Complete", f"Folder indexed: {folder}\nTotal chunks in store: {int(chunk_count)}\n\nIndexed data is cumulative and will persist after restart until you reset it.")
+
+    def abort_rag_operations(self):
+        try:
+            eng = self.main_app.get_rag_engine() if self.main_app else None
+            if eng is not None and hasattr(eng, "request_abort"):
+                eng.request_abort()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_rag_worker") and self._rag_worker is not None:
+                if hasattr(self._rag_worker, "stop"):
+                    self._rag_worker.stop()
+        except Exception:
+            pass
+        self.rag_status_lbl.setText("Aborting…")
+
+    def refresh_rag_status(self):
+        rag_dir = os.path.join(os.path.expanduser("~"), ".lokumai", "rag")
+        eng = None
+        try:
+            eng = self.main_app.get_rag_engine() if self.main_app else None
+        except Exception:
+            eng = None
+
+        if not eng or not getattr(eng, "enabled", False):
+            self.rag_status_lbl.setText("Disabled")
+            self.rag_chunks_lbl.setText("0 chunks indexed")
+            self.rag_index_lbl.setText(f"Store: {rag_dir}")
+            return
+
+        try:
+            stats = eng.get_stats() if hasattr(eng, "get_stats") else {}
+            chunk_count = int(stats.get("chunk_count", len(getattr(eng, "documents", []) or [])))
+        except Exception:
+            chunk_count = len(getattr(eng, "documents", []) or [])
+        self.rag_status_lbl.setText("Active" if chunk_count > 0 else "No data")
+        self.rag_chunks_lbl.setText(f"{int(chunk_count)} chunks indexed")
+        self.rag_index_lbl.setText(f"Store: {rag_dir}")
 
     def _on_docs_index_finished(self, ok: bool, chunk_count: int, err: str):
         if hasattr(self, "_rag_docs_btn") and self._rag_docs_btn is not None:
@@ -1038,17 +1181,33 @@ class DevPanelDialog(QWidget):
             QMessageBox.critical(self, "Docs Indexing Error", err)
             return
         self.rag_chunks_lbl.setText(f"{int(chunk_count)} chunks indexed")
-        self.rag_index_lbl.setText(f"Index: {int(chunk_count) if ok else 'None'}")
+        rag_dir = os.path.join(os.path.expanduser("~"), ".lokumai", "rag")
+        self.rag_index_lbl.setText(f"Store: {rag_dir}")
         self.rag_status_lbl.setText("Active" if ok else "No data")
         QMessageBox.information(self, "Docs Indexing Complete", f"Chunks: {int(chunk_count)}")
     
     def reset_rag(self):
-        if self.main_app and self.main_app.get_rag_engine():
-            self.main_app.rag_engine.reset_database()
-            self.rag_status_lbl.setText("Disabled")
-            self.rag_chunks_lbl.setText("0 chunks indexed")
-            self.rag_index_lbl.setText("Index Folder: None")
-            QMessageBox.information(self, "Reset Complete", "RAG index has been reset.")
+        if not self.main_app:
+            return
+        eng = self.main_app.get_rag_engine()
+        if not eng:
+            return
+
+        choice = QMessageBox.question(
+            self,
+            "Reset RAG Index",
+            "This will permanently delete all indexed RAG data stored under ~/.lokumai/rag.\n\nDo you want to continue?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if choice != QMessageBox.Yes:
+            return
+
+        eng.reset_database()
+        self.rag_status_lbl.setText("Disabled")
+        self.rag_chunks_lbl.setText("0 chunks indexed")
+        rag_dir = os.path.join(os.path.expanduser("~"), ".lokumai", "rag")
+        self.rag_index_lbl.setText(f"Store: {rag_dir}")
+        QMessageBox.information(self, "Reset Complete", "RAG index has been reset.")
     
     def build_finetune_tab(self):
         widget = QWidget()
@@ -1673,7 +1832,7 @@ class DevPanelDialog(QWidget):
             try:
                 ast.parse(p)
                 valid += 1
-            except:
+            except SyntaxError:
                 pass
         
         score = int((valid / total) * 100)
@@ -1750,6 +1909,9 @@ class DevPanelDialog(QWidget):
 
     def start_ram_monitor(self):
         self.ram_log.appendPlainText("RAM Monitor started...")
+        if psutil is None:
+            self.ram_log.appendPlainText("psutil is not available.")
+            return
         process = psutil.Process(os.getpid())
 
         def update_ram():
@@ -2125,8 +2287,16 @@ class ChatbotGUI(QWidget):
         try:
             rag_dir = os.path.join(os.path.expanduser("~"), ".lokumai", "rag")
             self.rag_engine = RAGEngine(storage_dir=rag_dir)
-        except Exception:
+            try:
+                self.rag_engine_error = ""
+            except Exception:
+                pass
+        except Exception as e:
             self.rag_engine = None
+            try:
+                self.rag_engine_error = str(e)
+            except Exception:
+                pass
         return self.rag_engine
 
     def load_prompts(self) -> dict:
@@ -2668,8 +2838,94 @@ class ChatbotGUI(QWidget):
         except Exception:
             pass
         try:
+            if getattr(self, "worker", None) is not None:
+                try:
+                    self.worker.wait(2000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
             if getattr(self, "_final_worker", None) is not None:
                 self._final_worker.requestInterruption()
+                try:
+                    self._final_worker.wait(2000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "stop_training"):
+                self.stop_training()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_ft_worker", None) is not None:
+                try:
+                    self._ft_worker.wait(4000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "abort_rag_operations"):
+                self.abort_rag_operations()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_rag_worker", None) is not None:
+                try:
+                    if hasattr(self._rag_worker, "stop"):
+                        self._rag_worker.stop()
+                except Exception:
+                    pass
+                try:
+                    self._rag_worker.wait(4000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_docs_worker", None) is not None:
+                try:
+                    self._docs_worker.requestInterruption()
+                except Exception:
+                    pass
+                try:
+                    self._docs_worker.wait(4000)
+                except Exception:
+                    pass
+                try:
+                    if self._docs_worker.isRunning():
+                        self._docs_worker.terminate()
+                        self._docs_worker.wait(2000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if getattr(self, "model_loader", None) is not None:
+                try:
+                    self.model_loader.requestInterruption()
+                except Exception:
+                    pass
+                try:
+                    self.model_loader.wait(6000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            ds = getattr(self, "dev_sidebar", None)
+            if ds is not None and getattr(ds, "_model_loader", None) is not None:
+                try:
+                    ds._model_loader.requestInterruption()
+                except Exception:
+                    pass
+                try:
+                    ds._model_loader.wait(6000)
+                except Exception:
+                    pass
         except Exception:
             pass
         try:

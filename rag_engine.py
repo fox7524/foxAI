@@ -24,6 +24,8 @@ USAGE:
 import os
 import glob
 import json
+import hashlib
+import time
 import numpy as np
 from typing import List, Dict, Any, Optional
 
@@ -76,6 +78,9 @@ DEFAULT_RAG_DIR = os.path.join(os.path.expanduser("~"), ".lokumai", "rag")
 DEFAULT_INDEX_NAME = "faiss_index.bin"
 DEFAULT_DOCS_NAME = "docs_metadata.npy"
 DEFAULT_META_NAME = "rag_meta.json"
+DEFAULT_CHUNKS_META_NAME = "chunks_meta.npy"
+DEFAULT_STATE_NAME = "rag_state.json"
+DEFAULT_STAGING_DIRNAME = "staging"
 
 # ============================================================================
 # RAG ENGINE CLASS
@@ -117,13 +122,28 @@ class RAGEngine:
         self.index_path = os.path.join(self.storage_dir, DEFAULT_INDEX_NAME)
         self.docs_path = os.path.join(self.storage_dir, DEFAULT_DOCS_NAME)
         self.meta_path = os.path.join(self.storage_dir, DEFAULT_META_NAME)
+        self.chunks_meta_path = os.path.join(self.storage_dir, DEFAULT_CHUNKS_META_NAME)
+        self.state_path = os.path.join(self.storage_dir, DEFAULT_STATE_NAME)
+        self.staging_dir = os.path.join(self.storage_dir, DEFAULT_STAGING_DIRNAME)
+        os.makedirs(self.staging_dir, exist_ok=True)
         self.indexed_folder: str = ""
+
+        self.embed_device = self._select_embed_device()
+        self.embed_batch_size = self._select_embed_batch_size(self.embed_device)
 
         # Load the embedding model
         # This model is downloaded on first use (~90MB) and cached
         # 'all-MiniLM-L6-v2' creates 384-dimensional vectors
         # It maps any text to a point in 384D space where similar texts are close
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        try:
+            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device=self.embed_device)
+        except TypeError:
+            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            try:
+                if hasattr(self.embedding_model, "to"):
+                    self.embedding_model.to(self.embed_device)
+            except Exception:
+                pass
 
         # FAISS index - will be initialized when we have vectors
         # None means no index loaded yet
@@ -133,14 +153,192 @@ class RAGEngine:
         # This list is parallel to the FAISS index:
         # - self.documents[0] corresponds to vector at index 0 in FAISS
         self.documents: List[str] = []
+        self.chunk_meta: List[Dict[str, Any]] = []
+        self.state: Dict[str, Any] = {"version": 1, "files": {}}
         self.last_error: str = ""
+        self._abort = False
 
         # Load existing index if available (persistent across restarts)
         self.load_index()
+        self._load_state()
+        self._validate_or_quarantine_existing_store()
+
+    def _select_embed_device(self) -> str:
+        val = (os.environ.get("LOKUMAI_EMBED_DEVICE") or "").strip().lower()
+        if val in ("cpu", "mps"):
+            return val
+        try:
+            import torch  # type: ignore
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return "mps"
+        except Exception:
+            pass
+        return "cpu"
+
+    def _select_embed_batch_size(self, device: str) -> int:
+        raw = (os.environ.get("LOKUMAI_EMBED_BATCH") or "").strip()
+        if raw:
+            try:
+                v = int(raw)
+                if 1 <= v <= 2048:
+                    return v
+            except Exception:
+                pass
+        if device == "mps":
+            return 128
+        return 32
+
+    def request_abort(self) -> None:
+        try:
+            self._abort = True
+        except Exception:
+            pass
+
+    def clear_abort(self) -> None:
+        try:
+            self._abort = False
+        except Exception:
+            pass
+
+    def _check_abort(self) -> None:
+        if bool(getattr(self, "_abort", False)):
+            raise RuntimeError("RAG operation aborted")
+
+    def _file_id_for(self, path: str) -> str:
+        p = os.path.abspath(path or "")
+        return hashlib.sha256(p.encode("utf-8", errors="ignore")).hexdigest()
+
+    def mark_deleted(self, source_path: str, deleted: bool = True) -> bool:
+        self._load_state()
+        if not isinstance(self.state, dict) or not isinstance(self.state.get("files"), dict):
+            self.state = {"version": 1, "files": {}}
+        p = os.path.abspath(source_path or "")
+        if not p:
+            return False
+        fid = self._file_id_for(p)
+        rec = self.state["files"].get(fid)
+        if not isinstance(rec, dict):
+            rec = {"source_path": p}
+            self.state["files"][fid] = rec
+        rec["deleted"] = bool(deleted)
+        rec["deleted_at"] = time.time() if deleted else None
+        try:
+            self._atomic_write_json(self.state_path, self.state)
+        except Exception:
+            pass
+        return True
+
+    def _is_file_deleted(self, file_id: str) -> bool:
+        try:
+            files = (self.state or {}).get("files") if isinstance(self.state, dict) else None
+            rec = files.get(file_id) if isinstance(files, dict) else None
+            return bool(isinstance(rec, dict) and rec.get("deleted"))
+        except Exception:
+            return False
 
     def _set_last_error(self, msg: str) -> None:
         try:
             self.last_error = (msg or "").strip()
+        except Exception:
+            pass
+
+    def _load_state(self) -> None:
+        try:
+            if os.path.exists(self.state_path):
+                with open(self.state_path, "r", encoding="utf-8") as f:
+                    obj = json.load(f)
+                if isinstance(obj, dict):
+                    files = obj.get("files")
+                    if isinstance(files, dict):
+                        self.state = obj
+                        return
+        except Exception:
+            pass
+        self.state = {"version": 1, "files": {}}
+
+    def _atomic_write_json(self, path: str, obj: Any) -> None:
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+
+    def _atomic_write_npy(self, path: str, arr: Any) -> None:
+        tmp_base = f"{path}.tmp"
+        np.save(tmp_base, arr)
+        tmp_path = tmp_base if tmp_base.endswith(".npy") else f"{tmp_base}.npy"
+        if not os.path.exists(tmp_path) and os.path.exists(tmp_base):
+            tmp_path = tmp_base
+        os.replace(tmp_path, path)
+
+    def _atomic_write_faiss(self, path: str, index_obj: Any) -> None:
+        tmp_path = f"{path}.tmp"
+        faiss.write_index(index_obj, tmp_path)
+        os.replace(tmp_path, path)
+
+    def validate_store(self) -> Dict[str, Any]:
+        ok = True
+        problems: List[str] = []
+
+        if self.index is None:
+            if self.documents or self.chunk_meta:
+                ok = False
+                problems.append("Index missing but documents/meta are not empty.")
+        else:
+            try:
+                ntotal = int(getattr(self.index, "ntotal", 0))
+            except Exception:
+                ntotal = 0
+            if ntotal != len(self.documents):
+                ok = False
+                problems.append(f"FAISS ntotal={ntotal} does not match documents={len(self.documents)}.")
+            if self.chunk_meta and len(self.chunk_meta) != len(self.documents):
+                ok = False
+                problems.append(f"chunks_meta={len(self.chunk_meta)} does not match documents={len(self.documents)}.")
+
+        st = self.state if isinstance(self.state, dict) else {}
+        files = st.get("files") if isinstance(st, dict) else None
+        if isinstance(files, dict) and self.documents:
+            for fid, rec in list(files.items())[:5000]:
+                if not isinstance(rec, dict):
+                    continue
+                cs = rec.get("chunk_start")
+                ce = rec.get("chunk_end")
+                if cs is None or ce is None:
+                    continue
+                try:
+                    cs_i = int(cs)
+                    ce_i = int(ce)
+                except Exception:
+                    ok = False
+                    problems.append(f"Invalid chunk range for {fid}.")
+                    continue
+                if cs_i < 0 or ce_i < cs_i or ce_i > len(self.documents):
+                    ok = False
+                    problems.append(f"Out-of-bounds chunk range for {fid}: [{cs_i},{ce_i}).")
+
+        return {"ok": ok, "problems": problems}
+
+    def _quarantine_store_files(self, reason: str) -> None:
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        suffix = f".corrupt.{ts}"
+        for p in (self.index_path, self.docs_path, self.chunks_meta_path, self.meta_path, self.state_path):
+            try:
+                if os.path.exists(p):
+                    os.replace(p, p + suffix)
+            except Exception:
+                pass
+        self.index = None
+        self.documents = []
+        self.chunk_meta = []
+        self.indexed_folder = ""
+        self.state = {"version": 1, "files": {}}
+        self._set_last_error(f"RAG store was quarantined: {reason}")
+
+    def _validate_or_quarantine_existing_store(self) -> None:
+        try:
+            res = self.validate_store()
+            if not res.get("ok", True):
+                self._quarantine_store_files(" | ".join(res.get("problems") or [])[:300])
         except Exception:
             pass
 
@@ -174,6 +372,11 @@ class RAGEngine:
                 # Read document chunks from numpy file
                 # allow_pickle=True needed because numpy can't store plain lists
                 self.documents = np.load(self.docs_path, allow_pickle=True).tolist()
+                if os.path.exists(self.chunks_meta_path):
+                    try:
+                        self.chunk_meta = np.load(self.chunks_meta_path, allow_pickle=True).tolist()
+                    except Exception:
+                        self.chunk_meta = []
                 self.indexed_folder = meta_folder
 
                 print(f"[RAG] Loaded index with {len(self.documents)} chunks.")
@@ -182,6 +385,7 @@ class RAGEngine:
                 # Reset to empty state if loading fails
                 self.index = None
                 self.documents = []
+                self.chunk_meta = []
                 self.indexed_folder = ""
 
     def save_index(self) -> None:
@@ -197,14 +401,20 @@ class RAGEngine:
         """
         if self.index is not None:
             # Write FAISS index to binary file
-            faiss.write_index(self.index, self.index_path)
+            self._atomic_write_faiss(self.index_path, self.index)
 
             # Save document chunks as numpy array
             # dtype=object needed for list of strings
-            np.save(self.docs_path, np.array(self.documents, dtype=object))
+            self._atomic_write_npy(self.docs_path, np.array(self.documents, dtype=object))
+            if self.chunk_meta:
+                self._atomic_write_npy(self.chunks_meta_path, np.array(self.chunk_meta, dtype=object))
             try:
-                with open(self.meta_path, "w", encoding="utf-8") as f:
-                    json.dump({"folder": self.indexed_folder}, f, ensure_ascii=False, indent=2)
+                self._atomic_write_json(self.meta_path, {"folder": self.indexed_folder})
+            except Exception:
+                pass
+            try:
+                if isinstance(self.state, dict):
+                    self._atomic_write_json(self.state_path, self.state)
             except Exception:
                 pass
 
@@ -235,12 +445,25 @@ class RAGEngine:
             chunk_text("Hello world test", chunk_size=6, overlap=2)
             -> ["Hello world", "world test"]
         """
+        s = (text or "").strip()
+        if not s:
+            return []
+
+        chunk_size = max(1, int(chunk_size))
+        overlap = max(0, int(overlap))
+        if overlap >= chunk_size:
+            overlap = max(0, chunk_size // 4)
+
+        step = chunk_size - overlap
+        if step <= 0:
+            step = max(1, chunk_size)
+
         chunks = []
 
         # Walk through text with step of (chunk_size - overlap)
         # This creates overlapping windows
-        for i in range(0, len(text), chunk_size - overlap):
-            chunk = text[i:i + chunk_size]
+        for i in range(0, len(s), step):
+            chunk = s[i:i + chunk_size]
             if chunk:  # Skip empty chunks
                 chunks.append(chunk.strip())
 
@@ -370,11 +593,6 @@ class RAGEngine:
             if LibZimArchive is not None:
                 try:
                     zf = LibZimArchive(file_path)
-                    n = getattr(zf, "entry_count", None)
-                    if callable(n):
-                        n = n()
-                    if not isinstance(n, int):
-                        n = 0
                     scanned = 0
                     kept = 0
                     skipped_ns = 0
@@ -385,30 +603,83 @@ class RAGEngine:
                     def is_article_entry(entry) -> bool:
                         ns = getattr(entry, "namespace", None)
                         if isinstance(ns, str) and ns:
-                            return ns.upper() == "A"
-                        url = ""
-                        for key in ("url", "path", "full_url"):
-                            v = getattr(entry, key, None)
-                            if isinstance(v, str) and v:
-                                url = v
-                                break
-                        if url:
-                            low = url.lower()
-                            if low.startswith("a/") or low.startswith("a:") or low.startswith("a"):
-                                return True
-                            return False
+                            return ns.upper() in ("A", "C")
                         return True
 
-                    max_scan = min(max(500, n), 20000) if n > 0 else 20000
-                    for i in range(max_scan):
-                        try:
-                            entry = None
-                            if hasattr(zf, "get_entry_by_id"):
-                                entry = zf.get_entry_by_id(i)
-                            elif hasattr(zf, "get_entry"):
-                                entry = zf.get_entry(i)
-                            if entry is None:
+                    it = None
+                    try:
+                        if hasattr(zf, "iterByPath"):
+                            it = zf.iterByPath()
+                        elif hasattr(zf, "iter_by_path"):
+                            it = zf.iter_by_path()
+                        elif hasattr(zf, "iterByUrl"):
+                            it = zf.iterByUrl()
+                        elif hasattr(zf, "iter_by_url"):
+                            it = zf.iter_by_url()
+                        elif hasattr(zf, "iter_entries"):
+                            it = zf.iter_entries()
+                        elif hasattr(zf, "entries"):
+                            it = getattr(zf, "entries")
+                            if callable(it):
+                                it = it()
+                        if it is not None:
+                            iter(it)
+                    except Exception:
+                        it = None
+
+                    def iter_entries():
+                        nonlocal scanned, read_fail
+                        if it is not None:
+                            try:
+                                it_iter = iter(it)
+                                first = next(it_iter, None)
+                                if first is not None:
+                                    yield first
+                                    for entry in it_iter:
+                                        yield entry
+                                    return
+                            except Exception:
+                                pass
+
+                        n = getattr(zf, "entry_count", None)
+                        if callable(n):
+                            n = n()
+                        if not isinstance(n, int):
+                            n = getattr(zf, "article_count", None)
+                            if callable(n):
+                                n = n()
+                        if not isinstance(n, int):
+                            n = 0
+                        max_scan = min(max(500, n), 20000) if n > 0 else 20000
+                        for i in range(max_scan):
+                            try:
+                                entry = None
+                                getter = None
+                                for name in (
+                                    "get_entry_by_id",
+                                    "getEntryById",
+                                    "_get_entry_by_id",
+                                    "get_entry",
+                                    "getEntry",
+                                    "get_article_by_id",
+                                    "getArticleById",
+                                    "get_article",
+                                    "getArticle",
+                                ):
+                                    if hasattr(zf, name):
+                                        getter = getattr(zf, name)
+                                        break
+                                if callable(getter):
+                                    entry = getter(i)
+                                if entry is None:
+                                    continue
+                                yield entry
+                            except Exception:
+                                read_fail += 1
                                 continue
+
+                    for entry in iter_entries():
+                        try:
                             scanned += 1
                             title = (getattr(entry, "title", "") or "").strip()
                             if not title:
@@ -423,9 +694,21 @@ class RAGEngine:
                             if mimetype and not mimetype.startswith("text/") and "xml" not in mimetype and "html" not in mimetype:
                                 skipped_nontext += 1
                                 continue
-                            item = entry.get_item() if hasattr(entry, "get_item") else None
-                            raw = bytes(item.content) if (item is not None and hasattr(item, "content")) else b""
-                            content = raw.decode("utf-8", errors="ignore").strip()
+                            content = ""
+                            try:
+                                if hasattr(entry, "read"):
+                                    raw = entry.read()
+                                    if isinstance(raw, bytes):
+                                        content = raw.decode("utf-8", errors="ignore").strip()
+                                    else:
+                                        content = str(raw or "").strip()
+                                else:
+                                    item = entry.get_item() if hasattr(entry, "get_item") else None
+                                    raw = bytes(item.content) if (item is not None and hasattr(item, "content")) else b""
+                                    content = raw.decode("utf-8", errors="ignore").strip()
+                            except Exception:
+                                read_fail += 1
+                                content = ""
                             if content:
                                 text_parts.append(f"## {title}\n\n{content}")
                                 kept += 1
@@ -434,11 +717,86 @@ class RAGEngine:
                         except Exception:
                             read_fail += 1
                             continue
+
+                    if not text_parts and scanned == 0 and hasattr(zf, "get_random_entry"):
+                        try:
+                            seen = set()
+                            for _ in range(5000):
+                                try:
+                                    entry = zf.get_random_entry()
+                                except Exception:
+                                    read_fail += 1
+                                    continue
+                                if entry is None:
+                                    continue
+                                scanned += 1
+                                title = (getattr(entry, "title", "") or "").strip()
+                                if not title:
+                                    continue
+                                path_val = getattr(entry, "path", None)
+                                if isinstance(path_val, str) and path_val:
+                                    if path_val in seen:
+                                        continue
+                                    seen.add(path_val)
+                                if not is_article_entry(entry):
+                                    skipped_ns += 1
+                                    continue
+                                mimetype = (getattr(entry, "mimetype", "") or "").lower()
+                                if title.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp")):
+                                    skipped_resource += 1
+                                    continue
+                                if mimetype and not mimetype.startswith("text/") and "xml" not in mimetype and "html" not in mimetype:
+                                    skipped_nontext += 1
+                                    continue
+                                content = ""
+                                try:
+                                    if hasattr(entry, "read"):
+                                        raw = entry.read()
+                                        if isinstance(raw, bytes):
+                                            content = raw.decode("utf-8", errors="ignore").strip()
+                                        else:
+                                            content = str(raw or "").strip()
+                                    else:
+                                        item = entry.get_item() if hasattr(entry, "get_item") else None
+                                        raw = bytes(item.content) if (item is not None and hasattr(item, "content")) else b""
+                                        content = raw.decode("utf-8", errors="ignore").strip()
+                                except Exception:
+                                    read_fail += 1
+                                    content = ""
+                                if content:
+                                    text_parts.append(f"## {title}\n\n{content}")
+                                    kept += 1
+                                if len(text_parts) >= 200:
+                                    break
+                        except Exception:
+                            pass
+
                     out = "\n\n".join(text_parts).strip()
                     if out:
                         return out
+                    ec = None
+                    ac = None
+                    aec = None
+                    try:
+                        ec = getattr(zf, "entry_count", None)
+                        if callable(ec):
+                            ec = ec()
+                    except Exception:
+                        ec = None
+                    try:
+                        ac = getattr(zf, "article_count", None)
+                        if callable(ac):
+                            ac = ac()
+                    except Exception:
+                        ac = None
+                    try:
+                        aec = getattr(zf, "all_entry_count", None)
+                        if callable(aec):
+                            aec = aec()
+                    except Exception:
+                        aec = None
                     self._set_last_error(
-                        f"ZIM (libzim) extracted 0 text entries (scanned={scanned}, skipped_ns={skipped_ns}, skipped_nontext={skipped_nontext}, skipped_resource={skipped_resource}, read_fail={read_fail})."
+                        f"ZIM (libzim) extracted 0 text entries (scanned={scanned}, skipped_ns={skipped_ns}, skipped_nontext={skipped_nontext}, skipped_resource={skipped_resource}, read_fail={read_fail}, entry_count={ec}, article_count={ac}, all_entry_count={aec})."
                     )
                     return ""
                 except Exception as e:
@@ -469,13 +827,7 @@ class RAGEngine:
                         def is_article_entry(entry) -> bool:
                             ns = getattr(entry, "namespace", None)
                             if isinstance(ns, str) and ns:
-                                return ns.upper() == "A"
-                            url = getattr(entry, "url", None)
-                            if isinstance(url, str) and url:
-                                low = url.lower()
-                                if low.startswith("a/") or low.startswith("a:") or low.startswith("a"):
-                                    return True
-                                return False
+                                return ns.upper() in ("A", "C")
                             return True
 
                         for entry in it:
@@ -699,59 +1051,201 @@ class RAGEngine:
         if not self.enabled:
             return False
 
+        self._load_state()
+        self._validate_or_quarantine_existing_store()
+
+        return bool(self._ingest_paths(file_paths, save_on_checkpoint=True))
+
+    def _ingest_paths(self, file_paths: List[str], save_on_checkpoint: bool = True) -> int:
+        self._check_abort()
         added = 0
         failures: List[str] = []
         pending_save = 0
+        last_save_at = time.time()
 
         def encode_batch(texts: List[str]):
             try:
-                return self.embedding_model.encode(texts, batch_size=32, show_progress_bar=False)
+                bs = getattr(self, "embed_batch_size", 32)
+                return self.embedding_model.encode(texts, batch_size=int(bs), show_progress_bar=False)
             except TypeError:
                 return self.embedding_model.encode(texts)
 
-        for path in file_paths:
-            chunks = self.process_file(path)
-            if not chunks:
-                ext = os.path.splitext(path)[1].lower()
-                if ext == ".zim":
-                    le = getattr(self, "last_error", "") or ""
-                    failures.append(f"{os.path.basename(path)}: {le or 'No text extracted from this ZIM.'}")
-                continue
+        def should_index(path: str, fid: str) -> bool:
+            rec = (self.state.get("files") or {}).get(fid) if isinstance(self.state, dict) else None
+            if not isinstance(rec, dict):
+                return True
+            if rec.get("deleted"):
+                return False
+            if rec.get("status") != "ok":
+                return True
+            try:
+                st = os.stat(path)
+            except Exception:
+                return False
+            try:
+                prev_size = int(rec.get("size", -1))
+                prev_mtime = float(rec.get("mtime", -1))
+            except Exception:
+                return True
+            if prev_size == int(st.st_size) and prev_mtime == float(st.st_mtime):
+                return False
+            return True
 
-            ext = os.path.splitext(path)[1].lower()
-            max_per_file = 2500 if ext == ".zim" else 1200
-            if len(chunks) > max_per_file:
-                chunks = chunks[:max_per_file]
+        txn_id = f"{int(time.time() * 1000)}"
+        txn_dir = os.path.join(self.staging_dir, txn_id)
+        try:
+            os.makedirs(txn_dir, exist_ok=True)
+        except Exception:
+            txn_dir = ""
 
-            for i in range(0, len(chunks), 128):
-                batch = chunks[i:i + 128]
-                if not batch:
+        try:
+            for path in file_paths:
+                self._check_abort()
+                p = os.path.abspath(path or "")
+                if not p:
                     continue
-                emb = encode_batch(batch)
-                emb = np.array(emb).astype("float32")
-                if emb.ndim != 2 or emb.shape[0] != len(batch):
-                    raise RuntimeError("Embedding model returned invalid shape.")
-                dim = int(emb.shape[1])
-                if self.index is None:
-                    self.index = faiss.IndexFlatL2(dim)
-                self.index.add(emb)
-                self.documents.extend(batch)
-                added += len(batch)
-                pending_save += len(batch)
-                if pending_save >= 2000:
-                    self.save_index()
-                    pending_save = 0
+                fid = self._file_id_for(p)
+                try:
+                    st = os.stat(p)
+                    size = int(st.st_size)
+                    mtime = float(st.st_mtime)
+                except Exception:
+                    size = -1
+                    mtime = -1.0
 
-        if added <= 0:
-            msg = "No content extracted from files."
-            if failures:
-                msg += "\n\n" + "\n".join(failures[:6])
-            raise RuntimeError(msg)
+                if isinstance(self.state, dict) and isinstance(self.state.get("files"), dict):
+                    rec = self.state["files"].get(fid)
+                    if not isinstance(rec, dict):
+                        rec = {}
+                        self.state["files"][fid] = rec
+                    rec["source_path"] = p
+                    rec["last_seen_at"] = time.time()
+                    if size >= 0:
+                        rec["size"] = size
+                    if mtime >= 0:
+                        rec["mtime"] = mtime
 
-        if pending_save > 0:
-            self.save_index()
+                if size < 0:
+                    continue
+                if not should_index(p, fid):
+                    continue
 
-        return True
+                chunks = self.process_file(p)
+                if not chunks:
+                    ext = os.path.splitext(p)[1].lower()
+                    if ext == ".zim":
+                        le = getattr(self, "last_error", "") or ""
+                        failures.append(f"{os.path.basename(p)}: {le or 'No text extracted from this ZIM.'}")
+                    if isinstance(self.state, dict) and isinstance(self.state.get("files"), dict):
+                        rec = self.state["files"].get(fid)
+                        if isinstance(rec, dict):
+                            rec["status"] = "failed"
+                            rec["error"] = getattr(self, "last_error", "") or "No content extracted."
+                            rec["indexed_at"] = time.time()
+                    continue
+
+                ext = os.path.splitext(p)[1].lower()
+                max_per_file = 2500 if ext == ".zim" else 1200
+                if len(chunks) > max_per_file:
+                    chunks = chunks[:max_per_file]
+
+                try:
+                    self._check_abort()
+                    all_emb: List[np.ndarray] = []
+                    dim = None
+                    for i in range(0, len(chunks), 128):
+                        self._check_abort()
+                        batch = chunks[i:i + 128]
+                        if not batch:
+                            continue
+                        emb = encode_batch(batch)
+                        emb = np.array(emb).astype("float32")
+                        if emb.ndim != 2 or emb.shape[0] != len(batch):
+                            raise RuntimeError("Embedding model returned invalid shape.")
+                        if dim is None:
+                            dim = int(emb.shape[1])
+                        all_emb.append(emb)
+
+                    if dim is None or not all_emb:
+                        raise RuntimeError("No embeddings created.")
+
+                    if self.index is None:
+                        self.index = faiss.IndexFlatL2(int(dim))
+
+                    start_idx = len(self.documents)
+                    for i, emb in enumerate(all_emb):
+                        self._check_abort()
+                        batch = chunks[i * 128:(i + 1) * 128]
+                        self.index.add(emb)
+                        self.documents.extend(batch)
+                        for _ in batch:
+                            self.chunk_meta.append({"file_id": fid, "source_path": p})
+                    end_idx = len(self.documents)
+
+                    if isinstance(self.state, dict) and isinstance(self.state.get("files"), dict):
+                        rec = self.state["files"].get(fid)
+                        if not isinstance(rec, dict):
+                            rec = {}
+                            self.state["files"][fid] = rec
+                        rec["status"] = "ok"
+                        rec["deleted"] = False
+                        rec["indexed_at"] = time.time()
+                        rec["chunk_start"] = int(start_idx)
+                        rec["chunk_end"] = int(end_idx)
+                        rec["chunks"] = int(end_idx - start_idx)
+                        rec["size"] = size
+                        rec["mtime"] = mtime
+                        rec.pop("error", None)
+
+                    delta = (end_idx - start_idx)
+                    added += delta
+                    pending_save += delta
+
+                    if save_on_checkpoint:
+                        now = time.time()
+                        if pending_save >= 5000 or (now - last_save_at) >= 30.0:
+                            self.save_index()
+                            pending_save = 0
+                            last_save_at = now
+                except Exception as e:
+                    failures.append(f"{os.path.basename(p)}: {e}")
+                    if isinstance(self.state, dict) and isinstance(self.state.get("files"), dict):
+                        rec = self.state["files"].get(fid)
+                        if isinstance(rec, dict):
+                            rec["status"] = "failed"
+                            rec["indexed_at"] = time.time()
+                            rec["error"] = str(e)
+                    continue
+
+            if added <= 0:
+                msg = "No content extracted from files."
+                if failures:
+                    msg += "\n\n" + "\n".join(failures[:6])
+                raise RuntimeError(msg)
+
+            if save_on_checkpoint and pending_save > 0:
+                self.save_index()
+            return int(added)
+        finally:
+            try:
+                if txn_dir and os.path.isdir(txn_dir):
+                    for root, dirs, files in os.walk(txn_dir, topdown=False):
+                        for fn in files:
+                            try:
+                                os.remove(os.path.join(root, fn))
+                            except Exception:
+                                pass
+                        for dn in dirs:
+                            try:
+                                os.rmdir(os.path.join(root, dn))
+                            except Exception:
+                                pass
+                    try:
+                        os.rmdir(txn_dir)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
     def ingest_folder(self, folder_path: str, recursive: bool = True) -> bool:
         """
@@ -769,35 +1263,62 @@ class RAGEngine:
             return False
 
         folder_abs = os.path.abspath(folder_path)
-        if self.indexed_folder and os.path.abspath(self.indexed_folder) != folder_abs:
-            self.reset_database()
-        if not self.indexed_folder:
-            self.indexed_folder = folder_abs
-        if os.path.abspath(self.indexed_folder) == folder_abs and self.index is not None and self.documents:
-            return True
+        self.indexed_folder = folder_abs
+        self._load_state()
+        self._validate_or_quarantine_existing_store()
 
-        # Collect all files we can process
-        file_paths = []
+        exts = {
+            ".pdf", ".docx", ".doc", ".zim",
+            ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff",
+            ".py", ".cpp", ".c", ".h", ".hpp", ".js", ".ts",
+            ".html", ".htm", ".css", ".txt", ".md",
+            ".json", ".xml", ".yaml", ".yml", ".sh", ".ino",
+        }
+        batch: List[str] = []
+        seen = 0
+        added_total = 0
+        batch_size = 2000
 
-        # Extensions we support
-        extensions = [
-            '*.pdf', '*.docx', '*.doc', '*.zim',
-            '*.jpg', '*.jpeg', '*.png', '*.webp', '*.bmp', '*.tif', '*.tiff',
-            '*.py', '*.cpp', '*.c', '*.h', '*.hpp', '*.js', '*.ts',
-            '*.html', '*.htm', '*.css', '*.txt', '*.md',
-            '*.json', '*.xml', '*.yaml', '*.yml', '*.sh', '*.ino',
-        ]
+        def flush():
+            nonlocal batch, added_total
+            if not batch:
+                return
+            added_total += int(self._ingest_paths(batch, save_on_checkpoint=True))
+            batch = []
 
-        for ext in extensions:
-            if recursive:
-                pattern = os.path.join(folder_abs, '**', ext)
-                file_paths.extend(glob.glob(pattern, recursive=True))
-            else:
-                pattern = os.path.join(folder_abs, ext)
-                file_paths.extend(glob.glob(pattern))
+        self._check_abort()
+        if recursive:
+            for root, dirs, files in os.walk(folder_abs):
+                self._check_abort()
+                for fn in files:
+                    self._check_abort()
+                    ext = os.path.splitext(fn)[1].lower()
+                    if ext not in exts:
+                        continue
+                    seen += 1
+                    batch.append(os.path.join(root, fn))
+                    if len(batch) >= batch_size:
+                        flush()
+        else:
+            try:
+                for fn in os.listdir(folder_abs):
+                    self._check_abort()
+                    p = os.path.join(folder_abs, fn)
+                    if not os.path.isfile(p):
+                        continue
+                    ext = os.path.splitext(fn)[1].lower()
+                    if ext not in exts:
+                        continue
+                    seen += 1
+                    batch.append(p)
+                    if len(batch) >= batch_size:
+                        flush()
+            except Exception:
+                pass
 
-        print(f"[RAG] Found {len(file_paths)} files in {folder_abs}")
-        return self.ingest_documents(file_paths)
+        flush()
+        print(f"[RAG] Found {seen} supported files in {folder_abs}")
+        return bool(added_total > 0)
 
     # =========================================================================
     # QUERY / RETRIEVAL
@@ -824,22 +1345,35 @@ class RAGEngine:
             return ""
 
         try:
+            self._check_abort()
             # Embed the query using the same model
             query_vector = self.embedding_model.encode([query_text])
             query_vector = np.array(query_vector).astype('float32')
+            self._check_abort()
 
             # Search FAISS for k nearest neighbors
             # Returns both distances and indices
             # distances: L2 distance to each result (lower = better match)
             # indices: Position of result in our documents list
-            distances, indices = self.index.search(query_vector, k)
+            fetch_k = int(max(k * 10, 50))
+            if fetch_k > 500:
+                fetch_k = 500
+            distances, indices = self.index.search(query_vector, fetch_k)
 
             # Retrieve original text for each matched index
             results = []
             for idx in indices[0]:
                 # FAISS returns -1 for "no result"
                 if idx != -1 and idx < len(self.documents):
+                    if idx < len(self.chunk_meta):
+                        meta = self.chunk_meta[idx]
+                        if isinstance(meta, dict):
+                            fid = meta.get("file_id")
+                            if isinstance(fid, str) and fid and self._is_file_deleted(fid):
+                                continue
                     results.append(self.documents[idx])
+                    if len(results) >= int(k):
+                        break
 
             if not results:
                 return ""
@@ -850,6 +1384,9 @@ class RAGEngine:
             return context_str
 
         except Exception as e:
+            if "aborted" in str(e).lower():
+                self._set_last_error(str(e))
+                return ""
             print(f"[RAG] Query error: {e}")
             return ""
 
@@ -869,32 +1406,55 @@ class RAGEngine:
         - 'count': Number of chunks found
         """
         if not self.enabled or self.index is None:
-            return {"context": "", "chunks": [], "distances": [], "count": 0}
+            return {"context": "", "chunks": [], "distances": [], "sources": [], "count": 0}
 
         try:
+            self._check_abort()
             query_vector = self.embedding_model.encode([query_text])
             query_vector = np.array(query_vector).astype('float32')
+            self._check_abort()
 
-            distances, indices = self.index.search(query_vector, k)
+            fetch_k = int(max(k * 10, 50))
+            if fetch_k > 500:
+                fetch_k = 500
+            distances, indices = self.index.search(query_vector, fetch_k)
 
             results = []
             dists = []
+            sources = []
 
             for idx, dist in zip(indices[0], distances[0]):
                 if idx != -1 and idx < len(self.documents):
                     results.append(self.documents[idx])
                     dists.append(float(dist))
+                    src = {}
+                    if idx < len(self.chunk_meta):
+                        meta = self.chunk_meta[idx]
+                        if isinstance(meta, dict):
+                            src = dict(meta)
+                    fid = src.get("file_id") if isinstance(src, dict) else None
+                    if isinstance(fid, str) and fid and self._is_file_deleted(fid):
+                        results.pop()
+                        dists.pop()
+                        continue
+                    sources.append(src)
+                    if len(results) >= int(k):
+                        break
 
             return {
                 "context": "\n\n---\n\n".join(results),
                 "chunks": results,
                 "distances": dists,
+                "sources": sources,
                 "count": len(results)
             }
 
         except Exception as e:
+            if "aborted" in str(e).lower():
+                self._set_last_error(str(e))
+                return {"context": "", "chunks": [], "distances": [], "sources": [], "count": 0}
             print(f"[RAG] Query error: {e}")
-            return {"context": "", "chunks": [], "distances": [], "count": 0}
+            return {"context": "", "chunks": [], "distances": [], "sources": [], "count": 0}
 
     # =========================================================================
     # UTILITY METHODS
@@ -949,11 +1509,23 @@ class RAGEngine:
                 os.remove(self.meta_path)
         except Exception:
             pass
+        try:
+            if os.path.exists(self.chunks_meta_path):
+                os.remove(self.chunks_meta_path)
+        except Exception:
+            pass
+        try:
+            if os.path.exists(self.state_path):
+                os.remove(self.state_path)
+        except Exception:
+            pass
 
         # Clear in-memory data
         self.index = None
         self.documents = []
+        self.chunk_meta = []
         self.indexed_folder = ""
+        self.state = {"version": 1, "files": {}}
 
         print("[RAG] Index reset. All data cleared.")
 

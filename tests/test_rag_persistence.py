@@ -26,13 +26,19 @@ class TestRagPersistence(unittest.TestCase):
         eng.embedding_model = _StubEmbedder()
         eng.index = None
         eng.documents = []
+        eng.chunk_meta = []
         eng.last_error = ""
         eng.storage_dir = os.path.abspath(storage_dir)
         os.makedirs(eng.storage_dir, exist_ok=True)
         eng.index_path = os.path.join(eng.storage_dir, "faiss_index.bin")
         eng.docs_path = os.path.join(eng.storage_dir, "docs_metadata.npy")
         eng.meta_path = os.path.join(eng.storage_dir, "rag_meta.json")
+        eng.chunks_meta_path = os.path.join(eng.storage_dir, "chunks_meta.npy")
+        eng.state_path = os.path.join(eng.storage_dir, "rag_state.json")
+        eng.staging_dir = os.path.join(eng.storage_dir, "staging")
+        os.makedirs(eng.staging_dir, exist_ok=True)
         eng.indexed_folder = ""
+        eng.state = {"version": 1, "files": {}}
         return eng
 
     def test_index_persists_across_restart(self):
@@ -60,7 +66,7 @@ class TestRagPersistence(unittest.TestCase):
                 meta = json.load(f)
             self.assertEqual(str(meta.get("folder")), "/tmp/folderA")
 
-    def test_folder_change_resets_index(self):
+    def test_folder_change_preserves_existing_index(self):
         if not getattr(rag_engine, "HAS_FAISS", False):
             self.skipTest("faiss not available")
 
@@ -84,5 +90,5 @@ class TestRagPersistence(unittest.TestCase):
 
             eng.ingest_folder(folder_b, recursive=True)
             self.assertEqual(os.path.abspath(folder_b), os.path.abspath(eng.indexed_folder))
-            self.assertFalse(any("AAA" in c for c in eng.documents))
+            self.assertTrue(any("AAA" in c for c in eng.documents))
             self.assertTrue(any("BBB" in c for c in eng.documents))
