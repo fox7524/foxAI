@@ -4020,7 +4020,7 @@ class ChatbotGUI(QWidget):
             if msg.get("role") != "assistant":
                 return
             msg["think_open"] = not bool(msg.get("think_open"))
-            self.render_chat(self.active_chat)
+            self.render_chat(self.active_chat, keep_scroll=True)
             return
 
     def open_message_menu(self, msg_index: int):
@@ -4101,11 +4101,21 @@ class ChatbotGUI(QWidget):
         if msg.get("role") != "assistant":
             return
         msg["think_open"] = not bool(msg.get("think_open"))
-        self.render_chat(self.active_chat)
+        self.render_chat(self.active_chat, keep_scroll=True)
 
-    def render_chat(self, chat_name: str):
+    def render_chat(self, chat_name: str, *, keep_scroll: bool = False):
         if not hasattr(self, "chat_msgs_layout") or self.chat_msgs_layout is None:
             return
+
+        old_scroll_val = None
+        old_scroll_max = None
+        try:
+            sb = self.chat_display.verticalScrollBar()
+            old_scroll_val = int(sb.value())
+            old_scroll_max = int(sb.maximum())
+        except Exception:
+            old_scroll_val = None
+            old_scroll_max = None
 
         msgs = self.chat_ui.get(chat_name, []) or []
         colors = getattr(self, "_theme_colors", None) or {
@@ -4265,7 +4275,15 @@ class ChatbotGUI(QWidget):
 
         self.chat_msgs_layout.addStretch()
         try:
-            self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
+            sb = self.chat_display.verticalScrollBar()
+            if keep_scroll and old_scroll_val is not None:
+                if old_scroll_max is not None and old_scroll_max > 0:
+                    ratio = float(old_scroll_val) / float(old_scroll_max)
+                    sb.setValue(int(ratio * float(sb.maximum())))
+                else:
+                    sb.setValue(int(old_scroll_val))
+            else:
+                sb.setValue(int(sb.maximum()))
         except Exception:
             pass
 

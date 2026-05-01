@@ -1,1 +1,0 @@
-{"instruction": "write me a code for using esp32s3 n16r8 model's internal built in rgb led turning on each led one sec and turn off loop system like this: red 1 sec-off-blue 1 sec-off- and green 1 sec-off- and start from the red again. imfinite loop", "output": ""}

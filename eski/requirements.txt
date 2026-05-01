@@ -1,3 +1,0 @@
-PyQt5
-llama-cpp-python
-python-docx
