@@ -1074,7 +1074,6 @@ class RAGEngine:
         if not self.enabled:
             return False
 
-        self.clear_abort()
         self._load_state()
         self._validate_or_quarantine_existing_store()
 
@@ -1289,7 +1288,6 @@ class RAGEngine:
             print(f"[RAG] Invalid folder: {folder_path}")
             return False
 
-        self.clear_abort()
         folder_abs = os.path.abspath(folder_path)
         self.indexed_folder = folder_abs
         self._load_state()
@@ -1373,7 +1371,6 @@ class RAGEngine:
             return ""
 
         try:
-            self.clear_abort()
             self._check_abort()
             # Embed the query using the same model
             query_vector = self.embedding_model.encode([query_text])
@@ -1415,6 +1412,10 @@ class RAGEngine:
         except Exception as e:
             if "aborted" in str(e).lower():
                 self._set_last_error(str(e))
+                try:
+                    self.clear_abort()
+                except Exception:
+                    pass
                 return ""
             print(f"[RAG] Query error: {e}")
             return ""
@@ -1438,7 +1439,6 @@ class RAGEngine:
             return {"context": "", "chunks": [], "distances": [], "sources": [], "count": 0}
 
         try:
-            self.clear_abort()
             self._check_abort()
             query_vector = self.embedding_model.encode([query_text])
             query_vector = np.array(query_vector).astype('float32')
@@ -1482,6 +1482,10 @@ class RAGEngine:
         except Exception as e:
             if "aborted" in str(e).lower():
                 self._set_last_error(str(e))
+                try:
+                    self.clear_abort()
+                except Exception:
+                    pass
                 return {"context": "", "chunks": [], "distances": [], "sources": [], "count": 0}
             print(f"[RAG] Query error: {e}")
             return {"context": "", "chunks": [], "distances": [], "sources": [], "count": 0}

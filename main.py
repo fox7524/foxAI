@@ -3536,6 +3536,10 @@ class ChatbotGUI(QWidget):
         self._set_chat_enabled(False)
         self.service_status_lbl.setText("Service: unloaded")
         try:
+            self.gen_status_lbl.setText("")
+        except Exception:
+            pass
+        try:
             import gc
             gc.collect()
         except Exception:
