@@ -552,7 +552,14 @@ class FineTuneWorker(QThread):
         self._stopping = True
         try:
             if self._proc and self._proc.poll() is None:
-                self._proc.terminate()
+                if sys.platform != "win32":
+                    try:
+                        import signal
+                        os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
+                    except Exception:
+                        self._proc.terminate()
+                else:
+                    self._proc.terminate()
         except Exception:
             pass
 
@@ -574,7 +581,14 @@ class FineTuneWorker(QThread):
                 rc = proc.wait(timeout=5 if self._stopping else None)
             except Exception:
                 try:
-                    proc.kill()
+                    if sys.platform != "win32":
+                        try:
+                            import signal
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        except Exception:
+                            proc.kill()
+                    else:
+                        proc.kill()
                 except Exception:
                     pass
                 rc = proc.wait()
@@ -991,6 +1005,12 @@ class DevPanelDialog(QWidget):
         self.rag_index_lbl = QLabel("")
         refresh_btn = QPushButton("Refresh Status")
         refresh_btn.clicked.connect(self.refresh_rag_status)
+        load_btn = QPushButton("Load RAG Data")
+        load_btn.clicked.connect(self.load_rag_data)
+        unload_btn = QPushButton("Unload RAG Data")
+        unload_btn.clicked.connect(self.unload_rag_data)
+        self._rag_load_btn = load_btn
+        self._rag_unload_btn = unload_btn
         
         s_layout.addWidget(QLabel("Status:"), 0, 0)
         s_layout.addWidget(self.rag_status_lbl, 0, 1)
@@ -999,6 +1019,8 @@ class DevPanelDialog(QWidget):
         s_layout.addWidget(QLabel("Index Path:"), 2, 0)
         s_layout.addWidget(self.rag_index_lbl, 2, 1)
         s_layout.addWidget(refresh_btn, 3, 0, 1, 3)
+        s_layout.addWidget(load_btn, 4, 0, 1, 2)
+        s_layout.addWidget(unload_btn, 4, 2, 1, 1)
         status_box.setLayout(s_layout)
         layout.addWidget(status_box)
 
@@ -1074,7 +1096,6 @@ class DevPanelDialog(QWidget):
         layout.addWidget(reset_btn)
         
         layout.addStretch()
-        QTimer.singleShot(0, self.refresh_rag_status)
         return widget
     
     def browse_rag_folder(self):
@@ -1111,6 +1132,39 @@ class DevPanelDialog(QWidget):
                 self.project_ws_path.setText("")
         except Exception:
             pass
+    
+    def load_rag_data(self):
+        if not self.main_app:
+            return
+        try:
+            self.main_app.use_rag = True
+            self.main_app.prompts["use_rag"] = True
+            self.main_app.save_prompts(self.main_app.prompts)
+        except Exception:
+            pass
+        try:
+            eng = self.main_app.get_rag_engine()
+            if eng is not None and hasattr(eng, "get_stats"):
+                eng.get_stats()
+        except Exception:
+            pass
+        self.refresh_rag_status()
+
+    def unload_rag_data(self):
+        if not self.main_app:
+            return
+        try:
+            self.main_app.use_rag = False
+            self.main_app.prompts["use_rag"] = False
+            self.main_app.save_prompts(self.main_app.prompts)
+        except Exception:
+            pass
+        try:
+            if hasattr(self.main_app, "unload_rag_engine"):
+                self.main_app.unload_rag_engine()
+        except Exception:
+            pass
+        self.refresh_rag_status()
     
     def index_project_files(self):
         folder = self.rag_folder_path.text().strip()
@@ -1200,6 +1254,15 @@ class DevPanelDialog(QWidget):
 
     def refresh_rag_status(self):
         rag_dir = os.path.join(os.path.expanduser("~"), ".lokumai", "rag")
+        try:
+            use_rag = bool(getattr(self.main_app, "use_rag", True)) if self.main_app else True
+        except Exception:
+            use_rag = True
+        if not use_rag:
+            self.rag_status_lbl.setText("Unloaded")
+            self.rag_chunks_lbl.setText("0 chunks indexed")
+            self.rag_index_lbl.setText(f"Store: {rag_dir}")
+            return
         eng = None
         try:
             eng = self.main_app.get_rag_engine() if self.main_app else None
@@ -1293,8 +1356,14 @@ class DevPanelDialog(QWidget):
         c_layout.addWidget(QLabel("Batch Size:"), 3, 0)
         self.lora_batch = QSpinBox()
         self.lora_batch.setRange(1, 8)
-        self.lora_batch.setValue(2)
+        self.lora_batch.setValue(1)
         c_layout.addWidget(self.lora_batch, 3, 1)
+
+        c_layout.addWidget(QLabel("Train Layers:"), 4, 0)
+        self.lora_layers = QSpinBox()
+        self.lora_layers.setRange(1, 32)
+        self.lora_layers.setValue(8)
+        c_layout.addWidget(self.lora_layers, 4, 1)
         
         config_box.setLayout(c_layout)
         layout.addWidget(config_box)
@@ -1440,16 +1509,44 @@ class DevPanelDialog(QWidget):
                 self,
                 "Training Warning",
                 "Training starts a separate process that loads the full model again.\n\n"
-                "If the model is currently loaded in the app, you may run out of RAM.\n\n"
-                "Continue anyway?",
+                "To avoid running out of RAM, the app will unload the currently loaded model before training.\n\n"
+                "Continue?",
                 QMessageBox.Yes | QMessageBox.No,
             )
             if res != QMessageBox.Yes:
                 return
 
         try:
+            self.main_app.training_active = True
+        except Exception:
+            pass
+        try:
+            self.main_app._set_chat_enabled(False)
+        except Exception:
+            pass
+        try:
+            self.main_app.unload_model()
+        except Exception:
+            pass
+        try:
+            if hasattr(self.main_app, "unload_rag_engine"):
+                self.main_app.unload_rag_engine()
+        except Exception:
+            pass
+
+        try:
             data_dir = self._prepare_finetune_data_dir()
         except Exception as e:
+            try:
+                if self.main_app:
+                    self.main_app.training_active = False
+            except Exception:
+                pass
+            try:
+                if self.main_app:
+                    self.main_app._set_chat_enabled(True)
+            except Exception:
+                pass
             QMessageBox.critical(self, "Dataset Error", str(e))
             return
 
@@ -1457,6 +1554,7 @@ class DevPanelDialog(QWidget):
         alpha = int(self.lora_alpha.value())
         iters = int(self.lora_iters.value())
         batch = int(self.lora_batch.value())
+        layers = int(self.lora_layers.value()) if hasattr(self, "lora_layers") else 16
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         adapter_path = os.path.abspath(os.path.join("lora_data", "adapters", f"run_{ts}"))
@@ -1484,7 +1582,7 @@ class DevPanelDialog(QWidget):
         try:
             proc = eng.start_training(
                 batch_size=batch,
-                num_layers=16,
+                num_layers=layers,
                 iters=iters,
                 dataset_path=data_dir,
                 adapter_path=adapter_path,
@@ -1499,6 +1597,17 @@ class DevPanelDialog(QWidget):
                 self._stop_train_btn.setEnabled(False)
             QMessageBox.critical(self, "Training Error", str(e))
             return
+        
+        try:
+            self.train_log.appendPlainText(f"PID: {getattr(proc, 'pid', '')}")
+            self.train_log.appendPlainText(f"CMD: {getattr(proc, 'args', '')}")
+            try:
+                if sys.platform != "win32" and getattr(proc, "pid", None):
+                    self.train_log.appendPlainText(f"PGID: {os.getpgid(int(proc.pid))}")
+            except Exception:
+                pass
+        except Exception:
+            pass
 
         self._ft_worker = FineTuneWorker(proc, adapter_path)
         self._ft_worker.line.connect(self.train_log.appendPlainText)
@@ -1517,6 +1626,11 @@ class DevPanelDialog(QWidget):
 
     def _on_train_error(self, err: str):
         self.train_log.appendPlainText(f"ERROR: {err}")
+        try:
+            if self.main_app:
+                self.main_app.training_active = False
+        except Exception:
+            pass
         self._cleanup_train_ui()
         QMessageBox.critical(self, "Training Error", err)
 
@@ -1525,17 +1639,49 @@ class DevPanelDialog(QWidget):
         if adapter_path:
             self.train_log.appendPlainText(f"Adapter saved at: {adapter_path}")
             self.train_log.appendPlainText("To fuse: python -m mlx_lm fuse --model <base_model> --adapter-path <adapter> --save-path <new_model>")
+        try:
+            if self.main_app:
+                self.main_app.training_active = False
+        except Exception:
+            pass
         self._cleanup_train_ui(success=(int(rc) == 0))
 
-    def _cleanup_train_ui(self, success: bool = False):
-        if hasattr(self, "_ft_worker"):
+    def _finalize_ft_worker(self) -> None:
+        w = getattr(self, "_ft_worker", None)
+        if w is None:
+            return
+        try:
+            if hasattr(w, "isRunning") and w.isRunning():
+                QTimer.singleShot(150, self._finalize_ft_worker)
+                return
+        except Exception:
+            pass
+        try:
+            w.deleteLater()
+        except Exception:
+            pass
+        try:
             self._ft_worker = None
+        except Exception:
+            pass
+
+    def _cleanup_train_ui(self, success: bool = False):
+        try:
+            w = getattr(self, "_ft_worker", None)
+            if w is not None:
+                try:
+                    w.wait(1000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         self.train_progress.setRange(0, 100)
         self.train_progress.setValue(100 if success else 0)
         if hasattr(self, "_start_train_btn") and self._start_train_btn is not None:
             self._start_train_btn.setEnabled(True)
         if hasattr(self, "_stop_train_btn") and self._stop_train_btn is not None:
             self._stop_train_btn.setEnabled(False)
+        self._finalize_ft_worker()
 
     def _prepare_finetune_data_dir(self) -> str:
         use_sqlite = bool(getattr(self, "use_sqlite", None) and self.use_sqlite.isChecked())
@@ -2065,6 +2211,8 @@ class ChatbotGUI(QWidget):
         self.user_prompt = self.prompts.get("user_prompt", "You are a helpful assistant.")
         self.theme = self.prompts.get("theme", "dark")
         self.current_model_path = self.prompts.get("model_path", self.current_model_path)
+        self.use_rag = bool(self.prompts.get("use_rag", True))
+        self.training_active = False
         self.project_root = self.prompts.get("project_root", "")
         self._project_file_cache = None
         self._pending_project_files: list[str] = []
@@ -2085,6 +2233,12 @@ class ChatbotGUI(QWidget):
         self._final_pending = None
 
         self.init_ui()
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.aboutToQuit.connect(self._shutdown_threads)
+        except Exception:
+            pass
 
         self._init_chat_db()
         self._load_chats_from_db()
@@ -2332,6 +2486,8 @@ class ChatbotGUI(QWidget):
         return
 
     def get_rag_engine(self):
+        if bool(getattr(self, "training_active", False)):
+            return None
         if self.rag_engine is not None:
             return self.rag_engine
         if RAGEngine is None:
@@ -2351,6 +2507,27 @@ class ChatbotGUI(QWidget):
             except Exception:
                 pass
         return self.rag_engine
+
+    def unload_rag_engine(self) -> None:
+        try:
+            self.rag_engine = None
+        except Exception:
+            pass
+        try:
+            self.rag_engine_error = ""
+        except Exception:
+            pass
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+        try:
+            import torch  # type: ignore
+            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                torch.mps.empty_cache()
+        except Exception:
+            pass
 
     def load_prompts(self) -> dict:
         """
@@ -2886,104 +3063,7 @@ class ChatbotGUI(QWidget):
 
     def closeEvent(self, event):
         try:
-            self._stop_generation(False)
-        except Exception:
-            pass
-        try:
-            if getattr(self, "worker", None) is not None:
-                try:
-                    self.worker.wait(2000)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        try:
-            if getattr(self, "_final_worker", None) is not None:
-                self._final_worker.requestInterruption()
-                try:
-                    self._final_worker.wait(2000)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        try:
-            if hasattr(self, "stop_training"):
-                self.stop_training()
-        except Exception:
-            pass
-        try:
-            if getattr(self, "_ft_worker", None) is not None:
-                try:
-                    self._ft_worker.wait(4000)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        try:
-            if hasattr(self, "abort_rag_operations"):
-                self.abort_rag_operations()
-        except Exception:
-            pass
-        try:
-            if getattr(self, "_rag_worker", None) is not None:
-                try:
-                    if hasattr(self._rag_worker, "stop"):
-                        self._rag_worker.stop()
-                except Exception:
-                    pass
-                try:
-                    self._rag_worker.wait(4000)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        try:
-            if getattr(self, "_docs_worker", None) is not None:
-                try:
-                    self._docs_worker.requestInterruption()
-                except Exception:
-                    pass
-                try:
-                    self._docs_worker.wait(4000)
-                except Exception:
-                    pass
-                try:
-                    if self._docs_worker.isRunning():
-                        self._docs_worker.terminate()
-                        self._docs_worker.wait(2000)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        try:
-            if getattr(self, "model_loader", None) is not None:
-                try:
-                    self.model_loader.requestInterruption()
-                except Exception:
-                    pass
-                try:
-                    self.model_loader.wait(6000)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        try:
-            ds = getattr(self, "dev_sidebar", None)
-            if ds is not None and getattr(ds, "_model_loader", None) is not None:
-                try:
-                    ds._model_loader.requestInterruption()
-                except Exception:
-                    pass
-                try:
-                    ds._model_loader.wait(6000)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        try:
-            if getattr(self, "mem_thread", None) is not None:
-                self.mem_thread.requestInterruption()
-                self.mem_thread.wait(2000)
+            self._shutdown_threads()
         except Exception:
             pass
         super().closeEvent(event)
@@ -3546,8 +3626,114 @@ class ChatbotGUI(QWidget):
             pass
         try:
             import mlx.core as mx  # type: ignore
-            if hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
+            if hasattr(mx, "clear_cache"):
+                mx.clear_cache()
+            elif hasattr(mx, "metal") and hasattr(mx.metal, "clear_cache"):
                 mx.metal.clear_cache()
+        except Exception:
+            pass
+
+    def _stop_thread_obj(self, t, wait_ms: int) -> None:
+        if t is None:
+            return
+        try:
+            if hasattr(t, "stop"):
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(t, "requestInterruption"):
+                try:
+                    t.requestInterruption()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(t, "wait"):
+                try:
+                    t.wait(int(wait_ms))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(t, "isRunning") and t.isRunning() and hasattr(t, "terminate"):
+                try:
+                    t.terminate()
+                except Exception:
+                    pass
+                try:
+                    t.wait(2000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _shutdown_threads(self) -> None:
+        try:
+            self._stop_generation(False)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "abort_rag_operations"):
+                self.abort_rag_operations()
+        except Exception:
+            pass
+        try:
+            self._stop_thread_obj(getattr(self, "worker", None), 2000)
+        except Exception:
+            pass
+        try:
+            self._stop_thread_obj(getattr(self, "_final_worker", None), 2000)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "stop_training"):
+                self.stop_training()
+        except Exception:
+            pass
+        try:
+            self._stop_thread_obj(getattr(self, "_ft_worker", None), 4000)
+        except Exception:
+            pass
+        try:
+            self._stop_thread_obj(getattr(self, "_rag_worker", None), 4000)
+        except Exception:
+            pass
+        try:
+            self._stop_thread_obj(getattr(self, "_docs_worker", None), 4000)
+        except Exception:
+            pass
+        try:
+            self._stop_thread_obj(getattr(self, "model_loader", None), 8000)
+        except Exception:
+            pass
+        try:
+            ds = getattr(self, "dev_sidebar_widget", None)
+            if ds is not None:
+                self._stop_thread_obj(getattr(ds, "_model_loader", None), 8000)
+                self._stop_thread_obj(getattr(ds, "_ft_worker", None), 4000)
+                self._stop_thread_obj(getattr(ds, "_ds_export_worker", None), 4000)
+                self._stop_thread_obj(getattr(ds, "_rag_worker", None), 4000)
+                self._stop_thread_obj(getattr(ds, "_docs_worker", None), 4000)
+        except Exception:
+            pass
+        try:
+            dlg = getattr(self, "dev_dialog", None)
+            if dlg is not None:
+                self._stop_thread_obj(getattr(dlg, "_model_loader", None), 8000)
+                self._stop_thread_obj(getattr(dlg, "_ft_worker", None), 4000)
+                self._stop_thread_obj(getattr(dlg, "_ds_export_worker", None), 4000)
+                self._stop_thread_obj(getattr(dlg, "_rag_worker", None), 4000)
+                self._stop_thread_obj(getattr(dlg, "_docs_worker", None), 4000)
+        except Exception:
+            pass
+        try:
+            self._stop_thread_obj(getattr(self, "mem_thread", None), 2000)
         except Exception:
             pass
 
@@ -4129,22 +4315,24 @@ class ChatbotGUI(QWidget):
             proj_ctx = ""
         if proj_ctx:
             ctx_parts.append(f"Project context:\n{proj_ctx}")
-        rag_engine = self.get_rag_engine()
-        if rag_engine and getattr(rag_engine, "enabled", False):
-            rag_docs = rag_engine.query(user_text)
-            if rag_docs:
-                ctx_parts.append(f"Background info:\n{rag_docs}")
-                self.rag_badge.setText("RAG: ACTIVE")
-                self.rag_badge.setProperty("ragState", "active")
-                self.rag_badge.style().unpolish(self.rag_badge)
-                self.rag_badge.style().polish(self.rag_badge)
-            else:
-                self.rag_badge.setText("RAG: EMPTY")
-                self.rag_badge.setProperty("ragState", "empty")
-                self.rag_badge.style().unpolish(self.rag_badge)
-                self.rag_badge.style().polish(self.rag_badge)
+        if bool(getattr(self, "use_rag", True)) and not bool(getattr(self, "training_active", False)):
+            rag_engine = self.get_rag_engine()
+            if rag_engine and getattr(rag_engine, "enabled", False):
+                rag_docs = rag_engine.query(user_text)
+                if rag_docs:
+                    ctx_parts.append(f"Background info:\n{rag_docs}")
+                    self.rag_badge.setText("RAG: ACTIVE")
+                    self.rag_badge.setProperty("ragState", "active")
+                    self.rag_badge.style().unpolish(self.rag_badge)
+                    self.rag_badge.style().polish(self.rag_badge)
+                else:
+                    self.rag_badge.setText("RAG: EMPTY")
+                    self.rag_badge.setProperty("ragState", "empty")
+                    self.rag_badge.style().unpolish(self.rag_badge)
+                    self.rag_badge.style().polish(self.rag_badge)
         if ctx_parts:
             context_prompt = "\n\n".join(ctx_parts) + f"\n\nUser: {user_text}"
+        
         
         self._last_context_prompt = context_prompt
         temp_history = list(self.chats[self.active_chat])

@@ -51,6 +51,8 @@ class FinetuneEngine:
         data_dir = dataset_path if dataset_path else self.dataset_dir
         cmd = [sys.executable, "-m", "mlx_lm", "lora", "--model", self.model_path, "--train", "--data", data_dir]
         cmd += ["--batch-size", str(batch_size), "--num-layers", str(num_layers), "--iters", str(iters)]
+        if os.environ.get("LOKUMAI_FT_GRAD_CHECKPOINT", "1") != "0":
+            cmd += ["--grad-checkpoint"]
         if adapter_path:
             cmd += ["--adapter-path", str(adapter_path)]
         if config_path:
@@ -60,6 +62,7 @@ class FinetuneEngine:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            start_new_session=(sys.platform != "win32"),
         )
         return process
