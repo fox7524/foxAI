@@ -899,6 +899,7 @@ class DevPanelDialog(QWidget):
         self.main_app = main_app
         self._collapsed = False
         self._expanded_size = QSize(400, 300)
+        self._rag_reset_armed_until = 0.0
 
         root = QVBoxLayout(self)
         if embedded:
@@ -1000,6 +1001,23 @@ class DevPanelDialog(QWidget):
         s_layout.addWidget(refresh_btn, 3, 0, 1, 3)
         status_box.setLayout(s_layout)
         layout.addWidget(status_box)
+
+        ws_box = QGroupBox("Project Workspace")
+        ws_layout = QGridLayout()
+        self.project_ws_path = QLineEdit()
+        self.project_ws_path.setPlaceholderText("Select a project folder for file lookups...")
+        if self.main_app and getattr(self.main_app, "project_root", ""):
+            self.project_ws_path.setText(str(getattr(self.main_app, "project_root", "")))
+        ws_layout.addWidget(QLabel("Folder:"), 0, 0)
+        ws_layout.addWidget(self.project_ws_path, 0, 1)
+        ws_browse = QPushButton("Browse...")
+        ws_browse.clicked.connect(self.browse_project_workspace)
+        ws_layout.addWidget(ws_browse, 0, 2)
+        ws_clear = QPushButton("Clear")
+        ws_clear.clicked.connect(self.clear_project_workspace)
+        ws_layout.addWidget(ws_clear, 1, 2)
+        ws_box.setLayout(ws_layout)
+        layout.addWidget(ws_box)
         
         # Project Folder Indexing
         folder_box = QGroupBox("Project Folder Indexing")
@@ -1063,6 +1081,36 @@ class DevPanelDialog(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Select Project Folder")
         if folder:
             self.rag_folder_path.setText(folder)
+
+    def browse_project_workspace(self):
+        if not self.main_app:
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Select Project Workspace")
+        if folder:
+            try:
+                self.main_app._set_project_root(folder)
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "project_ws_path") and self.project_ws_path is not None:
+                    self.project_ws_path.setText(folder)
+            except Exception:
+                pass
+
+    def clear_project_workspace(self):
+        if not self.main_app:
+            return
+        try:
+            self.main_app.project_root = ""
+            self.main_app.prompts["project_root"] = ""
+            self.main_app.save_prompts(self.main_app.prompts)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "project_ws_path") and self.project_ws_path is not None:
+                self.project_ws_path.setText("")
+        except Exception:
+            pass
     
     def index_project_files(self):
         folder = self.rag_folder_path.text().strip()
@@ -1192,14 +1240,20 @@ class DevPanelDialog(QWidget):
         eng = self.main_app.get_rag_engine()
         if not eng:
             return
+        now = time.time()
+        if now > float(getattr(self, "_rag_reset_armed_until", 0.0) or 0.0):
+            self._rag_reset_armed_until = now + 10.0
+            QMessageBox.warning(
+                self,
+                "Reset RAG Index",
+                "Reset is armed.\n\nClick Reset again within 10 seconds to confirm.",
+            )
+            return
 
-        choice = QMessageBox.question(
-            self,
-            "Reset RAG Index",
-            "This will permanently delete all indexed RAG data stored under ~/.lokumai/rag.\n\nDo you want to continue?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if choice != QMessageBox.Yes:
+        self._rag_reset_armed_until = 0.0
+        text, ok = QInputDialog.getText(self, "Confirm Reset", "Type RESET to permanently delete ~/.lokumai/rag:")
+        if not ok or (text or "").strip().upper() != "RESET":
+            QMessageBox.information(self, "Reset Cancelled", "RAG reset cancelled.")
             return
 
         eng.reset_database()
@@ -1366,10 +1420,6 @@ class DevPanelDialog(QWidget):
         QMessageBox.information(self, "Export Complete", f"Exported dataset:\n{out_dir}\n\nFiles: {int(file_count)}\nChunks: {int(chunk_count)}")
     
     def browse_jsonl(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select JSONL File", "", "JSONL Files (*.jsonl)")
-        if path:
-            self.jsonl_path.setText(path)
-            return
         folder = QFileDialog.getExistingDirectory(self, "Select JSONL Dataset Folder")
         if folder:
             self.jsonl_path.setText(folder)
@@ -2015,6 +2065,9 @@ class ChatbotGUI(QWidget):
         self.user_prompt = self.prompts.get("user_prompt", "You are a helpful assistant.")
         self.theme = self.prompts.get("theme", "dark")
         self.current_model_path = self.prompts.get("model_path", self.current_model_path)
+        self.project_root = self.prompts.get("project_root", "")
+        self._project_file_cache = None
+        self._pending_project_files: list[str] = []
 
         # Chat Sessions Storage Mock
         self.chats = {"Default Chat": [{"role": "system", "content": self.system_prompt}]}
@@ -2469,7 +2522,7 @@ class ChatbotGUI(QWidget):
         self.model_load_btn = QPushButton("Load")
         self.model_load_btn.setObjectName("ModelLoadButton")
         self.model_load_btn.setFixedSize(62, 28)
-        self.model_load_btn.clicked.connect(self.load_model_via_picker)
+        self.model_load_btn.clicked.connect(self.load_model_quick)
         h_layout.addWidget(self.model_load_btn)
 
         self.model_unload_btn = QPushButton("Unload")
@@ -2542,13 +2595,8 @@ class ChatbotGUI(QWidget):
         tool_layout.setSpacing(8)
 
         btn_rag = QPushButton("Files")
-        btn_rag.clicked.connect(lambda: QMessageBox.information(self, "RAG", "Index your files for context!"))
-
-        btn_code = QPushButton("Run")
-        btn_code.clicked.connect(self.run_last_code)
-
         tool_layout.addWidget(btn_rag)
-        tool_layout.addWidget(btn_code)
+        btn_rag.clicked.connect(self.open_project_file_picker)
 
         send_btn = QPushButton("↑")
         send_btn.setFixedSize(32, 32)
@@ -2823,18 +2871,22 @@ class ChatbotGUI(QWidget):
         close_btn.clicked.connect(dlg.accept)
         dlg.exec_()
 
-    def stop_generation(self):
+    def _stop_generation(self, show_status: bool = True) -> None:
         if hasattr(self, "worker") and self.worker is not None:
             try:
                 self.worker.stop()
             except Exception:
                 pass
         self.stop_btn.setEnabled(False)
-        self.gen_status_lbl.setText("Stopping…")
+        if show_status:
+            self.gen_status_lbl.setText("Stopping…")
+
+    def stop_generation(self):
+        self._stop_generation(True)
 
     def closeEvent(self, event):
         try:
-            self.stop_generation()
+            self._stop_generation(False)
         except Exception:
             pass
         try:
@@ -3282,6 +3334,173 @@ class ChatbotGUI(QWidget):
         if enabled:
             self.input_field.setFocus()
 
+    def _set_project_root(self, folder: str) -> None:
+        p = os.path.abspath(folder or "")
+        if not p or not os.path.isdir(p):
+            return
+        self.project_root = p
+        try:
+            self.prompts["project_root"] = p
+            self.save_prompts(self.prompts)
+        except Exception:
+            pass
+        self._project_file_cache = None
+
+    def select_project_root(self) -> str:
+        folder = QFileDialog.getExistingDirectory(self, "Select Project Folder")
+        if folder:
+            self._set_project_root(folder)
+        return self.project_root or ""
+
+    def open_project_file_picker(self) -> None:
+        root = self.project_root or ""
+        if not root or not os.path.isdir(root):
+            root = self.select_project_root()
+        if not root or not os.path.isdir(root):
+            return
+        paths, _ = QFileDialog.getOpenFileNames(self, "Select Project File(s)", root, "All Files (*.*)")
+        if not paths:
+            return
+        for p in paths:
+            ap = os.path.abspath(p or "")
+            if ap and ap not in self._pending_project_files:
+                self._pending_project_files.append(ap)
+        try:
+            shown = ", ".join([os.path.basename(p) for p in paths[:3]])
+            if len(paths) > 3:
+                shown += f" (+{len(paths) - 3})"
+            self.gen_status_lbl.setText(f"Attached: {shown}")
+            QTimer.singleShot(4000, lambda: self.gen_status_lbl.setText(""))
+        except Exception:
+            pass
+
+    def _read_project_file(self, path: str, max_chars: int = 20000) -> str:
+        try:
+            if not path or not os.path.isfile(path):
+                return ""
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                data = f.read(max_chars + 1)
+            if len(data) > max_chars:
+                data = data[:max_chars] + "\n...[truncated]..."
+            return data
+        except Exception:
+            return ""
+
+    def _find_in_project_by_basename(self, basename: str, max_hits: int = 1) -> list[str]:
+        root = self.project_root or ""
+        if not root or not os.path.isdir(root):
+            return []
+        hits: list[str] = []
+        try:
+            for r, _dirs, files in os.walk(root):
+                if basename in files:
+                    hits.append(os.path.join(r, basename))
+                    if len(hits) >= int(max_hits):
+                        break
+        except Exception:
+            return hits
+        return hits
+
+    def _resolve_project_paths_from_text(self, user_text: str) -> list[str]:
+        root = self.project_root or ""
+        if not root or not os.path.isdir(root):
+            return []
+        import re
+        exts = "py|js|ts|tsx|jsx|json|md|txt|yaml|yml|toml|rs|go|java|kt|cpp|c|h|hpp|sh|sql"
+        pat = re.compile(rf"(?<![\\w\\./-])([\\w\\./-]+\\.(?:{exts}))(?![\\w\\./-])")
+        found = []
+        for m in pat.findall(user_text or ""):
+            v = (m or "").strip().strip("\"'`")
+            if not v:
+                continue
+            if os.path.isabs(v):
+                ap = os.path.abspath(v)
+                if ap.startswith(root + os.sep) and os.path.isfile(ap):
+                    found.append(ap)
+                continue
+            if "/" in v or "\\" in v:
+                ap = os.path.abspath(os.path.join(root, v))
+                if ap.startswith(root + os.sep) and os.path.isfile(ap):
+                    found.append(ap)
+                continue
+            hits = self._find_in_project_by_basename(v, max_hits=2)
+            for h in hits:
+                if h not in found:
+                    found.append(h)
+        uniq: list[str] = []
+        for p in found:
+            if p not in uniq:
+                uniq.append(p)
+        return uniq[:6]
+
+    def _build_project_context(self, user_text: str) -> str:
+        root = self.project_root or ""
+        if not root or not os.path.isdir(root):
+            return ""
+        paths: list[str] = []
+        for p in list(self._pending_project_files or []):
+            ap = os.path.abspath(p or "")
+            if ap and ap not in paths:
+                paths.append(ap)
+        auto = self._resolve_project_paths_from_text(user_text or "")
+        for p in auto:
+            if p not in paths:
+                paths.append(p)
+        if not paths:
+            return ""
+        blocks: list[str] = []
+        total = 0
+        for p in paths[:8]:
+            data = self._read_project_file(p)
+            if not data:
+                continue
+            rel = p
+            try:
+                rel = os.path.relpath(p, root)
+            except Exception:
+                pass
+            block = f"[FILE: {rel}]\n{data}\n[/FILE]"
+            total += len(block)
+            if total > 80000:
+                break
+            blocks.append(block)
+        try:
+            self._pending_project_files = []
+        except Exception:
+            pass
+        return "\n\n".join(blocks)
+
+    def _start_model_load(self, model_dir: str) -> None:
+        path = os.path.abspath(model_dir or "")
+        if not path or not os.path.isdir(path):
+            QMessageBox.warning(self, "Load Model", "Model folder not selected or invalid.")
+            return
+        self._set_chat_enabled(False)
+        self.service_status_lbl.setText("Service: loading…")
+        self.model_loader = ModelLoaderWorker(path)
+        self.model_loader.loaded.connect(self._on_model_loaded)
+        self.model_loader.error.connect(self._on_model_load_error)
+        self.model_loader.start()
+
+    def load_model_quick(self) -> None:
+        try:
+            if getattr(self, "model_loader", None) is not None and self.model_loader.isRunning():
+                QMessageBox.information(self, "Model", "Model is already loading.")
+                return
+        except Exception:
+            pass
+
+        if getattr(self, "model", None) is not None or getattr(self, "tokenizer", None) is not None:
+            res = QMessageBox.question(self, "Load Model", "A model is already loaded. Unload and load again?", QMessageBox.Yes | QMessageBox.No)
+            if res != QMessageBox.Yes:
+                return
+            self.unload_model()
+
+        path = self._find_default_model_path()
+        if not path:
+            path = QFileDialog.getExistingDirectory(self, "Select MLX Model Folder")
+        self._start_model_load(path)
+
     def load_model_via_picker(self) -> None:
         try:
             if getattr(self, "model_loader", None) is not None and self.model_loader.isRunning():
@@ -3298,21 +3517,12 @@ class ChatbotGUI(QWidget):
 
         path = QFileDialog.getExistingDirectory(self, "Select MLX Model Folder")
         if not path:
-            path = self._find_default_model_path()
-        if not path or not os.path.isdir(path):
-            QMessageBox.warning(self, "Load Model", "Model folder not selected or invalid.")
             return
-
-        self._set_chat_enabled(False)
-        self.service_status_lbl.setText("Service: loading…")
-        self.model_loader = ModelLoaderWorker(path)
-        self.model_loader.loaded.connect(self._on_model_loaded)
-        self.model_loader.error.connect(self._on_model_load_error)
-        self.model_loader.start()
+        self._start_model_load(path)
 
     def unload_model(self) -> None:
         try:
-            self.stop_generation()
+            self._stop_generation(False)
         except Exception:
             pass
         try:
@@ -3907,11 +4117,19 @@ class ChatbotGUI(QWidget):
         
         # Context formulation
         context_prompt = user_text
+        ctx_parts = []
+        proj_ctx = ""
+        try:
+            proj_ctx = self._build_project_context(user_text)
+        except Exception:
+            proj_ctx = ""
+        if proj_ctx:
+            ctx_parts.append(f"Project context:\n{proj_ctx}")
         rag_engine = self.get_rag_engine()
         if rag_engine and getattr(rag_engine, "enabled", False):
             rag_docs = rag_engine.query(user_text)
             if rag_docs:
-                context_prompt = f"Background info:\n{rag_docs}\n\nUser: {user_text}"
+                ctx_parts.append(f"Background info:\n{rag_docs}")
                 self.rag_badge.setText("RAG: ACTIVE")
                 self.rag_badge.setProperty("ragState", "active")
                 self.rag_badge.style().unpolish(self.rag_badge)
@@ -3921,6 +4139,8 @@ class ChatbotGUI(QWidget):
                 self.rag_badge.setProperty("ragState", "empty")
                 self.rag_badge.style().unpolish(self.rag_badge)
                 self.rag_badge.style().polish(self.rag_badge)
+        if ctx_parts:
+            context_prompt = "\n\n".join(ctx_parts) + f"\n\nUser: {user_text}"
         
         self._last_context_prompt = context_prompt
         temp_history = list(self.chats[self.active_chat])

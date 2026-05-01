@@ -185,8 +185,31 @@ class RAGEngine:
             except Exception:
                 pass
         if device == "mps":
-            return 128
+            return 256
         return 32
+
+    def _checkpoint_policy(self) -> tuple[int, float]:
+        raw_chunks = (os.environ.get("LOKUMAI_RAG_CHECKPOINT_CHUNKS") or "").strip()
+        raw_secs = (os.environ.get("LOKUMAI_RAG_CHECKPOINT_SECS") or "").strip()
+        chunks_default = 20000 if getattr(self, "embed_device", "cpu") == "mps" else 5000
+        secs_default = 120.0 if getattr(self, "embed_device", "cpu") == "mps" else 30.0
+        chunks = chunks_default
+        secs = secs_default
+        if raw_chunks:
+            try:
+                v = int(raw_chunks)
+                if 100 <= v <= 500000:
+                    chunks = v
+            except Exception:
+                pass
+        if raw_secs:
+            try:
+                v = float(raw_secs)
+                if 1.0 <= v <= 3600.0:
+                    secs = v
+            except Exception:
+                pass
+        return int(chunks), float(secs)
 
     def request_abort(self) -> None:
         try:
@@ -1051,6 +1074,7 @@ class RAGEngine:
         if not self.enabled:
             return False
 
+        self.clear_abort()
         self._load_state()
         self._validate_or_quarantine_existing_store()
 
@@ -1062,6 +1086,7 @@ class RAGEngine:
         failures: List[str] = []
         pending_save = 0
         last_save_at = time.time()
+        checkpoint_chunks, checkpoint_secs = self._checkpoint_policy()
 
         def encode_batch(texts: List[str]):
             try:
@@ -1151,11 +1176,20 @@ class RAGEngine:
 
                 try:
                     self._check_abort()
-                    all_emb: List[np.ndarray] = []
                     dim = None
-                    for i in range(0, len(chunks), 128):
+                    if self.index is not None:
+                        try:
+                            dim = int(getattr(self.index, "d"))
+                        except Exception:
+                            dim = None
+
+                    start_idx = len(self.documents)
+                    bs = int(getattr(self, "embed_batch_size", 32))
+                    window = max(512, bs * 16)
+                    window = min(window, 8192)
+                    for off in range(0, len(chunks), window):
                         self._check_abort()
-                        batch = chunks[i:i + 128]
+                        batch = chunks[off:off + window]
                         if not batch:
                             continue
                         emb = encode_batch(batch)
@@ -1164,23 +1198,16 @@ class RAGEngine:
                             raise RuntimeError("Embedding model returned invalid shape.")
                         if dim is None:
                             dim = int(emb.shape[1])
-                        all_emb.append(emb)
-
-                    if dim is None or not all_emb:
-                        raise RuntimeError("No embeddings created.")
-
-                    if self.index is None:
-                        self.index = faiss.IndexFlatL2(int(dim))
-
-                    start_idx = len(self.documents)
-                    for i, emb in enumerate(all_emb):
-                        self._check_abort()
-                        batch = chunks[i * 128:(i + 1) * 128]
+                        if self.index is None:
+                            self.index = faiss.IndexFlatL2(int(dim))
                         self.index.add(emb)
                         self.documents.extend(batch)
                         for _ in batch:
                             self.chunk_meta.append({"file_id": fid, "source_path": p})
+
                     end_idx = len(self.documents)
+                    if end_idx <= start_idx:
+                        raise RuntimeError("No embeddings created.")
 
                     if isinstance(self.state, dict) and isinstance(self.state.get("files"), dict):
                         rec = self.state["files"].get(fid)
@@ -1203,7 +1230,7 @@ class RAGEngine:
 
                     if save_on_checkpoint:
                         now = time.time()
-                        if pending_save >= 5000 or (now - last_save_at) >= 30.0:
+                        if pending_save >= int(checkpoint_chunks) or (now - last_save_at) >= float(checkpoint_secs):
                             self.save_index()
                             pending_save = 0
                             last_save_at = now
@@ -1262,6 +1289,7 @@ class RAGEngine:
             print(f"[RAG] Invalid folder: {folder_path}")
             return False
 
+        self.clear_abort()
         folder_abs = os.path.abspath(folder_path)
         self.indexed_folder = folder_abs
         self._load_state()
@@ -1345,6 +1373,7 @@ class RAGEngine:
             return ""
 
         try:
+            self.clear_abort()
             self._check_abort()
             # Embed the query using the same model
             query_vector = self.embedding_model.encode([query_text])
@@ -1409,6 +1438,7 @@ class RAGEngine:
             return {"context": "", "chunks": [], "distances": [], "sources": [], "count": 0}
 
         try:
+            self.clear_abort()
             self._check_abort()
             query_vector = self.embedding_model.encode([query_text])
             query_vector = np.array(query_vector).astype('float32')
