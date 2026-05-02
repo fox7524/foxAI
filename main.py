@@ -565,18 +565,41 @@ class FineTuneWorker(QThread):
 
     def run(self):
         try:
+            import selectors
+            import time
             proc = self._proc
             if proc is None:
                 self.error.emit("No process")
                 return
+            last_line = time.time()
+            last_heartbeat = 0.0
             if proc.stdout is not None:
-                for ln in iter(proc.stdout.readline, ""):
-                    if ln is None:
-                        break
-                    if ln:
-                        self.line.emit(ln.rstrip("\n"))
-                    if self._stopping:
-                        break
+                sel = selectors.DefaultSelector()
+                try:
+                    sel.register(proc.stdout, selectors.EVENT_READ)
+                    while True:
+                        if self._stopping:
+                            break
+                        if proc.poll() is not None:
+                            break
+                        events = sel.select(timeout=0.5)
+                        if events:
+                            ln = proc.stdout.readline()
+                            if ln == "":
+                                break
+                            if ln:
+                                self.line.emit(ln.rstrip("\n"))
+                                last_line = time.time()
+                                continue
+                        now = time.time()
+                        if now - last_line >= 60 and now - last_heartbeat >= 60:
+                            self.line.emit(f"[train] Still running… (no output for {int(now - last_line)}s)")
+                            last_heartbeat = now
+                finally:
+                    try:
+                        sel.close()
+                    except Exception:
+                        pass
             try:
                 rc = proc.wait(timeout=5 if self._stopping else None)
             except Exception:
@@ -1333,37 +1356,70 @@ class DevPanelDialog(QWidget):
         # Training Config
         config_box = QGroupBox("LoRA Training Configuration")
         c_layout = QGridLayout()
+
+        c_layout.addWidget(QLabel("Preset:"), 0, 0)
+        self.ft_preset = QComboBox()
+        self.ft_preset.addItems(["Safe (Recommended)", "Faster (More RAM)", "Quick Test"])
+        c_layout.addWidget(self.ft_preset, 0, 1)
         
-        c_layout.addWidget(QLabel("Rank:"), 0, 0)
+        c_layout.addWidget(QLabel("Rank:"), 1, 0)
         self.lora_rank = QSpinBox()
         self.lora_rank.setRange(4, 32)
         self.lora_rank.setValue(8)
-        c_layout.addWidget(self.lora_rank, 0, 1)
+        c_layout.addWidget(self.lora_rank, 1, 1)
         
-        c_layout.addWidget(QLabel("Alpha:"), 1, 0)
+        c_layout.addWidget(QLabel("Alpha:"), 2, 0)
         self.lora_alpha = QSpinBox()
         self.lora_alpha.setRange(8, 64)
         self.lora_alpha.setValue(32)
-        c_layout.addWidget(self.lora_alpha, 1, 1)
+        c_layout.addWidget(self.lora_alpha, 2, 1)
         
-        c_layout.addWidget(QLabel("Iterations:"), 2, 0)
+        c_layout.addWidget(QLabel("Iterations:"), 3, 0)
         self.lora_iters = QSpinBox()
         self.lora_iters.setRange(100, 2000)
         self.lora_iters.setValue(500)
         self.lora_iters.setSingleStep(100)
-        c_layout.addWidget(self.lora_iters, 2, 1)
+        c_layout.addWidget(self.lora_iters, 3, 1)
         
-        c_layout.addWidget(QLabel("Batch Size:"), 3, 0)
+        c_layout.addWidget(QLabel("Batch Size:"), 4, 0)
         self.lora_batch = QSpinBox()
         self.lora_batch.setRange(1, 8)
         self.lora_batch.setValue(1)
-        c_layout.addWidget(self.lora_batch, 3, 1)
+        c_layout.addWidget(self.lora_batch, 4, 1)
 
-        c_layout.addWidget(QLabel("Train Layers:"), 4, 0)
+        c_layout.addWidget(QLabel("Train Layers:"), 5, 0)
         self.lora_layers = QSpinBox()
         self.lora_layers.setRange(1, 32)
         self.lora_layers.setValue(8)
-        c_layout.addWidget(self.lora_layers, 4, 1)
+        c_layout.addWidget(self.lora_layers, 5, 1)
+
+        c_layout.addWidget(QLabel("Max Seq Len:"), 6, 0)
+        self.ft_max_seq = QSpinBox()
+        self.ft_max_seq.setRange(256, 2048)
+        self.ft_max_seq.setValue(512)
+        self.ft_max_seq.setSingleStep(128)
+        c_layout.addWidget(self.ft_max_seq, 6, 1)
+
+        c_layout.addWidget(QLabel("Steps / Eval:"), 7, 0)
+        self.ft_steps_per_eval = QSpinBox()
+        self.ft_steps_per_eval.setRange(0, 5000)
+        self.ft_steps_per_eval.setValue(200)
+        self.ft_steps_per_eval.setSingleStep(50)
+        c_layout.addWidget(self.ft_steps_per_eval, 7, 1)
+
+        c_layout.addWidget(QLabel("Val Batches:"), 8, 0)
+        self.ft_val_batches = QSpinBox()
+        self.ft_val_batches.setRange(0, 64)
+        self.ft_val_batches.setValue(1)
+        c_layout.addWidget(self.ft_val_batches, 8, 1)
+
+        c_layout.addWidget(QLabel("Clear Cache Thr:"), 9, 0)
+        self.ft_clear_cache_thr = QDoubleSpinBox()
+        self.ft_clear_cache_thr.setRange(0.0, 16.0)
+        self.ft_clear_cache_thr.setDecimals(2)
+        self.ft_clear_cache_thr.setSingleStep(0.25)
+        self.ft_clear_cache_thr.setValue(2.0)
+        c_layout.addWidget(self.ft_clear_cache_thr, 9, 1)
         
         config_box.setLayout(c_layout)
         layout.addWidget(config_box)
@@ -1371,6 +1427,27 @@ class DevPanelDialog(QWidget):
         # Data Source
         data_box = QGroupBox("Training Data Source")
         d_layout = QVBoxLayout()
+
+        model_row = QHBoxLayout()
+        self.ft_model_path = QLineEdit()
+        self.ft_model_path.setPlaceholderText("Model path for LoRA training (optional; defaults to loaded model)")
+        model_browse = QPushButton("Pick Model")
+        model_browse.clicked.connect(self.browse_ft_model_path)
+        model_row.addWidget(self.ft_model_path)
+        model_row.addWidget(model_browse)
+        d_layout.addLayout(model_row)
+
+        resume_row = QHBoxLayout()
+        self.ft_resume = QCheckBox("Resume from adapter file")
+        self.ft_resume.setChecked(False)
+        self.ft_resume_path = QLineEdit()
+        self.ft_resume_path.setPlaceholderText("Path to adapters.safetensors")
+        resume_browse = QPushButton("Pick Adapter")
+        resume_browse.clicked.connect(self.browse_ft_resume_adapter)
+        resume_row.addWidget(self.ft_resume)
+        resume_row.addWidget(self.ft_resume_path)
+        resume_row.addWidget(resume_browse)
+        d_layout.addLayout(resume_row)
         
         self.use_sqlite = QCheckBox("Use SQLite Database (dataset table)")
         self.use_sqlite.setChecked(False)
@@ -1392,9 +1469,17 @@ class DevPanelDialog(QWidget):
         jsonl_row.addWidget(jsonl_browse)
         d_layout.addLayout(jsonl_row)
 
-        self.ft_skip_valid = QCheckBox("Skip validation (train-only, avoids OOM)")
-        self.ft_skip_valid.setChecked(True)
-        d_layout.addWidget(self.ft_skip_valid)
+        self.ft_do_train = QCheckBox("Train")
+        self.ft_do_train.setChecked(True)
+        d_layout.addWidget(self.ft_do_train)
+
+        self.ft_do_valid = QCheckBox("Validation (run after training)")
+        self.ft_do_valid.setChecked(False)
+        d_layout.addWidget(self.ft_do_valid)
+
+        self.ft_presplit = QCheckBox("Pre-split long samples (uses batch + max seq len)")
+        self.ft_presplit.setChecked(True)
+        d_layout.addWidget(self.ft_presplit)
         
         data_box.setLayout(d_layout)
         layout.addWidget(data_box)
@@ -1442,7 +1527,65 @@ class DevPanelDialog(QWidget):
         layout.addWidget(self.train_log)
         
         layout.addStretch()
+        try:
+            self.ft_preset.currentIndexChanged.connect(self._apply_ft_preset)
+            self._apply_ft_preset(0)
+        except Exception:
+            pass
         return widget
+
+    def browse_ft_model_path(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select MLX Model Folder For Training")
+        if folder:
+            try:
+                self.ft_model_path.setText(os.path.abspath(folder))
+            except Exception:
+                self.ft_model_path.setText(folder)
+
+    def browse_ft_resume_adapter(self):
+        fp, _ = QFileDialog.getOpenFileName(self, "Select adapters.safetensors", "", "Adapter Weights (*.safetensors);;All Files (*)")
+        if fp:
+            try:
+                self.ft_resume_path.setText(os.path.abspath(fp))
+            except Exception:
+                self.ft_resume_path.setText(fp)
+
+    def _apply_ft_preset(self, _idx: int):
+        try:
+            name = (self.ft_preset.currentText() if hasattr(self, "ft_preset") else "").strip()
+        except Exception:
+            name = ""
+        if name == "Faster (More RAM)":
+            self.lora_rank.setValue(8)
+            self.lora_alpha.setValue(32)
+            self.lora_iters.setValue(500)
+            self.lora_batch.setValue(1)
+            self.lora_layers.setValue(12)
+            self.ft_max_seq.setValue(768)
+            self.ft_steps_per_eval.setValue(200)
+            self.ft_val_batches.setValue(1)
+            self.ft_clear_cache_thr.setValue(2.0)
+            return
+        if name == "Quick Test":
+            self.lora_rank.setValue(8)
+            self.lora_alpha.setValue(32)
+            self.lora_iters.setValue(150)
+            self.lora_batch.setValue(1)
+            self.lora_layers.setValue(4)
+            self.ft_max_seq.setValue(384)
+            self.ft_steps_per_eval.setValue(0)
+            self.ft_val_batches.setValue(0)
+            self.ft_clear_cache_thr.setValue(2.0)
+            return
+        self.lora_rank.setValue(8)
+        self.lora_alpha.setValue(32)
+        self.lora_iters.setValue(500)
+        self.lora_batch.setValue(1)
+        self.lora_layers.setValue(8)
+        self.ft_max_seq.setValue(512)
+        self.ft_steps_per_eval.setValue(200)
+        self.ft_val_batches.setValue(1)
+        self.ft_clear_cache_thr.setValue(2.0)
 
     def browse_finetune_ingest_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder For Training Data")
@@ -1501,10 +1644,21 @@ class DevPanelDialog(QWidget):
         if hasattr(self, "_ft_worker") and self._ft_worker is not None:
             QMessageBox.warning(self, "Training", "Training is already running.")
             return
-        if not self.main_app or not getattr(self.main_app, "current_model_path", ""):
-            QMessageBox.warning(self, "No Model", "Load a model first (Dev → Model).")
+        if not self.main_app:
+            QMessageBox.warning(self, "No App", "Main app is not available.")
             return
-        model_path = self.main_app.current_model_path
+
+        model_path = ""
+        try:
+            model_path = (self.ft_model_path.text() if hasattr(self, "ft_model_path") else "").strip()
+        except Exception:
+            model_path = ""
+        if not model_path:
+            model_path = getattr(self.main_app, "current_model_path", "") or ""
+        model_path = (model_path or "").strip()
+        if not model_path:
+            QMessageBox.warning(self, "No Model", "Pick a training model path or load a model first (Dev → Model).")
+            return
         if not os.path.isdir(model_path):
             QMessageBox.warning(self, "Invalid Model", "Model path is not valid.")
             return
@@ -1537,6 +1691,64 @@ class DevPanelDialog(QWidget):
                 self.main_app.unload_rag_engine()
         except Exception:
             pass
+        try:
+            import time as _time
+            import gc as _gc
+            _gc.collect()
+            try:
+                import mlx.core as mx  # type: ignore
+                if hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+            except Exception:
+                pass
+            _time.sleep(0.8)
+            _gc.collect()
+            try:
+                import mlx.core as mx  # type: ignore
+                if hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        do_train = True
+        do_valid = False
+        try:
+            do_train = bool(hasattr(self, "ft_do_train") and self.ft_do_train is not None and self.ft_do_train.isChecked())
+            do_valid = bool(hasattr(self, "ft_do_valid") and self.ft_do_valid is not None and self.ft_do_valid.isChecked())
+        except Exception:
+            do_train = True
+            do_valid = False
+        if not do_train and not do_valid:
+            QMessageBox.warning(self, "Fine-tune", "Select at least one: Train or Validation.")
+            return
+
+        try:
+            base = os.path.abspath(os.path.join("lora_data", "adapters"))
+            if os.path.isdir(base):
+                for nm in os.listdir(base):
+                    if not nm.startswith("run_"):
+                        continue
+                    full = os.path.join(base, nm)
+                    if not os.path.isdir(full):
+                        continue
+                    try:
+                        has_weights = any(
+                            fn.endswith(".safetensors")
+                            for fn in os.listdir(full)
+                            if os.path.isfile(os.path.join(full, fn))
+                        )
+                    except Exception:
+                        has_weights = True
+                    if not has_weights:
+                        try:
+                            import shutil
+                            shutil.rmtree(full, ignore_errors=True)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
         try:
             data_dir = self._prepare_finetune_data_dir()
@@ -1554,8 +1766,9 @@ class DevPanelDialog(QWidget):
             QMessageBox.critical(self, "Dataset Error", str(e))
             return
 
-        try:
-            if hasattr(self, "ft_skip_valid") and self.ft_skip_valid is not None and self.ft_skip_valid.isChecked():
+        orig_data_dir = data_dir
+        if do_train:
+            try:
                 import shutil
                 train_fp = os.path.join(os.path.abspath(data_dir), "train.jsonl")
                 if os.path.isfile(train_fp):
@@ -1568,18 +1781,51 @@ class DevPanelDialog(QWidget):
                         self.train_log.appendPlainText(f"[train] Train-only dataset: {data_dir}")
                     except Exception:
                         pass
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         rank = int(self.lora_rank.value())
         alpha = int(self.lora_alpha.value())
         iters = int(self.lora_iters.value())
         batch = int(self.lora_batch.value())
         layers = int(self.lora_layers.value()) if hasattr(self, "lora_layers") else 16
+        resume_adapter_file = None
+        try:
+            if bool(getattr(self, "ft_resume", None) and self.ft_resume.isChecked()):
+                fp = (self.ft_resume_path.text() if hasattr(self, "ft_resume_path") else "").strip()
+                if fp:
+                    fp = os.path.abspath(fp)
+                    if not os.path.isfile(fp):
+                        QMessageBox.warning(self, "Resume Adapter", "Resume adapter file does not exist.")
+                        return
+                    resume_adapter_file = fp
+        except Exception:
+            resume_adapter_file = None
+        try:
+            max_seq = int(self.ft_max_seq.value()) if hasattr(self, "ft_max_seq") else 512
+            steps_per_eval = int(self.ft_steps_per_eval.value()) if hasattr(self, "ft_steps_per_eval") else 200
+            val_batches = int(self.ft_val_batches.value()) if hasattr(self, "ft_val_batches") else 1
+            clear_thr = float(self.ft_clear_cache_thr.value()) if hasattr(self, "ft_clear_cache_thr") else 2.0
+            os.environ["LOKUMAI_FT_MAX_SEQ_LENGTH"] = str(max_seq)
+            os.environ["LOKUMAI_FT_STEPS_PER_EVAL"] = str(steps_per_eval)
+            os.environ["LOKUMAI_FT_VAL_BATCHES"] = str(val_batches)
+            os.environ["LOKUMAI_FT_TEST_BATCHES"] = str(val_batches)
+            os.environ["LOKUMAI_FT_CLEAR_CACHE_THRESHOLD"] = str(clear_thr)
+            os.environ["LOKUMAI_FT_PRESPLIT"] = "1" if bool(getattr(self, "ft_presplit", None) and self.ft_presplit.isChecked()) else "0"
+        except Exception:
+            pass
 
         ts = time.strftime("%Y%m%d_%H%M%S")
-        adapter_path = os.path.abspath(os.path.join("lora_data", "adapters", f"run_{ts}"))
-        os.makedirs(adapter_path, exist_ok=True)
+        adapter_path = ""
+        if do_train:
+            adapter_path = os.path.abspath(os.path.join("lora_data", "adapters", f"run_{ts}"))
+            os.makedirs(adapter_path, exist_ok=True)
+        else:
+            pick = QFileDialog.getExistingDirectory(self, "Select Adapter Folder (must contain adapters.safetensors)")
+            if not pick:
+                QMessageBox.warning(self, "Validation", "Adapter folder not selected.")
+                return
+            adapter_path = os.path.abspath(pick)
         cfg_path = os.path.abspath(os.path.join("lora_data", f"lora_cfg_{ts}.yaml"))
         with open(cfg_path, "w", encoding="utf-8") as f:
             f.write("lora_parameters:\n")
@@ -1589,7 +1835,7 @@ class DevPanelDialog(QWidget):
 
         self.train_log.clear()
         self.train_log.appendPlainText(f"Model: {model_path}")
-        self.train_log.appendPlainText(f"Data: {data_dir}")
+        self.train_log.appendPlainText(f"Data: {data_dir if do_train else orig_data_dir}")
         self.train_log.appendPlainText(f"Adapter: {adapter_path}")
         self.train_log.appendPlainText(f"Config: {cfg_path}")
 
@@ -1601,14 +1847,28 @@ class DevPanelDialog(QWidget):
 
         eng = FinetuneEngine(model_path)
         try:
-            proc = eng.start_training(
-                batch_size=batch,
-                num_layers=layers,
-                iters=iters,
-                dataset_path=data_dir,
-                adapter_path=adapter_path,
-                config_path=cfg_path,
-            )
+            if do_train:
+                self._ft_run_kind = "train"
+                self._ft_post_validate = bool(do_valid)
+                self._ft_post_validate_dir = orig_data_dir
+                self._ft_post_validate_cfg = cfg_path
+                proc = eng.start_training(
+                    batch_size=batch,
+                    num_layers=layers,
+                    iters=iters,
+                    dataset_path=data_dir,
+                    adapter_path=adapter_path,
+                    config_path=cfg_path,
+                    resume_adapter_file=resume_adapter_file,
+                )
+            else:
+                self._ft_run_kind = "valid"
+                self._ft_post_validate = False
+                proc = eng.start_validation(
+                    dataset_path=orig_data_dir,
+                    adapter_path=adapter_path,
+                    config_path=cfg_path,
+                )
         except Exception as e:
             self.train_progress.setRange(0, 100)
             self.train_progress.setValue(0)
@@ -1656,10 +1916,53 @@ class DevPanelDialog(QWidget):
         QMessageBox.critical(self, "Training Error", err)
 
     def _on_train_finished(self, rc: int, adapter_path: str):
-        self.train_log.appendPlainText(f"Training finished (exit={int(rc)})")
+        kind = "Training"
+        try:
+            kind = "Validation" if str(getattr(self, "_ft_run_kind", "train")) == "valid" else "Training"
+        except Exception:
+            kind = "Training"
+        self.train_log.appendPlainText(f"{kind} finished (exit={int(rc)})")
         if adapter_path:
             self.train_log.appendPlainText(f"Adapter saved at: {adapter_path}")
             self.train_log.appendPlainText("To fuse: python -m mlx_lm fuse --model <base_model> --adapter-path <adapter> --save-path <new_model>")
+
+        try:
+            post = bool(getattr(self, "_ft_post_validate", False))
+        except Exception:
+            post = False
+        if post and int(rc) == 0:
+            try:
+                self._ft_post_validate = False
+                self._ft_run_kind = "valid"
+            except Exception:
+                pass
+            try:
+                data_dir = str(getattr(self, "_ft_post_validate_dir", "") or "")
+                cfg_path = str(getattr(self, "_ft_post_validate_cfg", "") or "")
+            except Exception:
+                data_dir = ""
+                cfg_path = ""
+            try:
+                self.train_log.appendPlainText("[valid] Starting post-training validation…")
+            except Exception:
+                pass
+            try:
+                if self.main_app:
+                    self.main_app.training_active = True
+            except Exception:
+                pass
+            try:
+                eng = FinetuneEngine(self.main_app.current_model_path if self.main_app else "")
+                proc = eng.start_validation(dataset_path=data_dir, adapter_path=adapter_path, config_path=cfg_path)
+                self._finalize_ft_worker()
+                self._ft_worker = FineTuneWorker(proc, adapter_path)
+                self._ft_worker.line.connect(self.train_log.appendPlainText)
+                self._ft_worker.finished.connect(self._on_train_finished)
+                self._ft_worker.error.connect(self._on_train_error)
+                self._ft_worker.start()
+                return
+            except Exception as e:
+                self.train_log.appendPlainText(f"[valid] ERROR: {e}")
         try:
             if self.main_app:
                 self.main_app.training_active = False
