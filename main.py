@@ -1437,6 +1437,26 @@ class DevPanelDialog(QWidget):
         model_row.addWidget(model_browse)
         d_layout.addLayout(model_row)
 
+        ft_detect_box = QGroupBox("Detected MLX Models (LM Studio)")
+        ft_d_layout = QVBoxLayout()
+        self.ft_model_list = QListWidget()
+        self.ft_model_list.setMaximumHeight(120)
+        ft_d_layout.addWidget(self.ft_model_list)
+        ft_btn_row = QHBoxLayout()
+        ft_use_btn = QPushButton("Use Selected")
+        ft_use_btn.clicked.connect(self.use_selected_ft_model)
+        ft_btn_row.addWidget(ft_use_btn)
+        ft_refresh_btn = QPushButton("Refresh")
+        ft_refresh_btn.clicked.connect(self.refresh_ft_models)
+        ft_btn_row.addWidget(ft_refresh_btn)
+        ft_d_layout.addLayout(ft_btn_row)
+        ft_detect_box.setLayout(ft_d_layout)
+        d_layout.addWidget(ft_detect_box)
+        try:
+            self.refresh_ft_models()
+        except Exception:
+            pass
+
         resume_row = QHBoxLayout()
         self.ft_resume = QCheckBox("Resume from adapter file")
         self.ft_resume.setChecked(False)
@@ -1535,12 +1555,65 @@ class DevPanelDialog(QWidget):
         return widget
 
     def browse_ft_model_path(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select MLX Model Folder For Training")
+        start = os.path.expanduser("~/.lmstudio/models")
+        folder = QFileDialog.getExistingDirectory(self, "Select MLX Model Folder For Training", start if os.path.isdir(start) else "")
         if folder:
             try:
                 self.ft_model_path.setText(os.path.abspath(folder))
             except Exception:
                 self.ft_model_path.setText(folder)
+
+    def _scan_lmstudio_models(self) -> list[str]:
+        root = os.path.expanduser("~/.lmstudio/models")
+        if not os.path.isdir(root):
+            return []
+        found: list[str] = []
+        try:
+            for org in sorted(os.listdir(root)):
+                org_path = os.path.join(root, org)
+                if not os.path.isdir(org_path):
+                    continue
+                for model in sorted(os.listdir(org_path)):
+                    model_path = os.path.join(org_path, model)
+                    if not os.path.isdir(model_path):
+                        continue
+                    cfg = os.path.join(model_path, "config.json")
+                    tok = os.path.join(model_path, "tokenizer.json")
+                    if not (os.path.isfile(cfg) or os.path.isfile(tok)):
+                        if "mlx" not in model.lower() and "qwen" not in model.lower():
+                            continue
+                    try:
+                        has_weights = any(
+                            fn.endswith((".safetensors", ".npz"))
+                            for fn in os.listdir(model_path)
+                            if os.path.isfile(os.path.join(model_path, fn))
+                        )
+                    except Exception:
+                        has_weights = True
+                    if not has_weights:
+                        continue
+                    found.append(model_path)
+        except Exception:
+            return found
+        return found
+
+    def refresh_ft_models(self):
+        if not hasattr(self, "ft_model_list") or self.ft_model_list is None:
+            return
+        self.ft_model_list.clear()
+        for p in self._scan_lmstudio_models():
+            self.ft_model_list.addItem(p)
+
+    def use_selected_ft_model(self):
+        if not hasattr(self, "ft_model_list") or self.ft_model_list is None:
+            return
+        items = self.ft_model_list.selectedItems()
+        if not items:
+            QMessageBox.information(self, "Model", "Select a model from the list first.")
+            return
+        p = (items[0].text() or "").strip()
+        if p:
+            self.ft_model_path.setText(p)
 
     def browse_ft_resume_adapter(self):
         fp, _ = QFileDialog.getOpenFileName(self, "Select adapters.safetensors", "", "Adapter Weights (*.safetensors);;All Files (*)")
