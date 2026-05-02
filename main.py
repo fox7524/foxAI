@@ -77,10 +77,10 @@ from PyQt5.QtWidgets import (
     QComboBox, QTextBrowser, QProgressBar, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView, QGroupBox,
     QGridLayout, QPlainTextEdit, QDoubleSpinBox, QToolButton, QMenu, QAction,
-    QListWidgetItem, QSizePolicy
+    QListWidgetItem, QSizePolicy, QGraphicsDropShadowEffect
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QSettings
-from PyQt5.QtGui import QFont, QTextCursor, QPalette, QColor, QTextCharFormat, QCursor
+from PyQt5.QtGui import QFont, QTextCursor, QPalette, QColor, QTextCharFormat, QCursor, QFontDatabase
 
 psutil = None
 HAS_PSUTIL = False
@@ -1391,6 +1391,10 @@ class DevPanelDialog(QWidget):
         jsonl_row.addWidget(self.jsonl_path)
         jsonl_row.addWidget(jsonl_browse)
         d_layout.addLayout(jsonl_row)
+
+        self.ft_skip_valid = QCheckBox("Skip validation (train-only, avoids OOM)")
+        self.ft_skip_valid.setChecked(True)
+        d_layout.addWidget(self.ft_skip_valid)
         
         data_box.setLayout(d_layout)
         layout.addWidget(data_box)
@@ -1549,6 +1553,23 @@ class DevPanelDialog(QWidget):
                 pass
             QMessageBox.critical(self, "Dataset Error", str(e))
             return
+
+        try:
+            if hasattr(self, "ft_skip_valid") and self.ft_skip_valid is not None and self.ft_skip_valid.isChecked():
+                import shutil
+                train_fp = os.path.join(os.path.abspath(data_dir), "train.jsonl")
+                if os.path.isfile(train_fp):
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    train_only = os.path.abspath(os.path.join("lora_data", "train_only", f"run_{ts}"))
+                    os.makedirs(train_only, exist_ok=True)
+                    shutil.copyfile(train_fp, os.path.join(train_only, "train.jsonl"))
+                    data_dir = train_only
+                    try:
+                        self.train_log.appendPlainText(f"[train] Train-only dataset: {data_dir}")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
         rank = int(self.lora_rank.value())
         alpha = int(self.lora_alpha.value())
@@ -2972,9 +2993,6 @@ class ChatbotGUI(QWidget):
         self._rename_chat(chat_name, new_name.strip())
 
     def _delete_chat_by_name(self, chat_name: str):
-        if chat_name == "Default Chat":
-            QMessageBox.warning(self, "Delete Chat", "Default Chat cannot be deleted.")
-            return
         res = QMessageBox.question(self, "Delete Chat", f"Delete '{chat_name}'? This cannot be undone.", QMessageBox.Yes | QMessageBox.No)
         if res != QMessageBox.Yes:
             return
@@ -3011,10 +3029,35 @@ class ChatbotGUI(QWidget):
         self.chat_ui.pop(chat_name, None)
         self._remove_chat_list_item(chat_name)
         if self.active_chat == chat_name:
-            self.active_chat = "Default Chat"
-            if self.active_chat not in self.chats:
-                self.chats[self.active_chat] = [{"role": "system", "content": self.system_prompt}]
-                self.chat_ui.setdefault(self.active_chat, [])
+            fallback = ""
+            try:
+                for nm in self.chats.keys():
+                    fallback = str(nm)
+                    break
+            except Exception:
+                fallback = ""
+            if not fallback:
+                base = "New Chat"
+                idx = 1
+                fallback = base
+                while fallback in self.chats:
+                    idx += 1
+                    fallback = f"{base} {idx}"
+                self.chats[fallback] = [{"role": "system", "content": self.system_prompt}]
+                self.chat_ui.setdefault(fallback, [])
+                try:
+                    conn = sqlite3.connect(self._db_path())
+                    try:
+                        self._ensure_chat_row(conn, fallback)
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+                try:
+                    self._add_chat_list_item(fallback)
+                except Exception:
+                    self._rebuild_chat_list()
+            self.active_chat = fallback
         it = self._find_chat_list_item(self.active_chat)
         if it is not None:
             self.chat_list.setCurrentItem(it)
@@ -3987,8 +4030,14 @@ class ChatbotGUI(QWidget):
         return name == "New Chat" or name.startswith("New Chat ")
 
     def _auto_name_active_chat(self, first_message: str):
-        base = " ".join((first_message or "").strip().split()[:6]).strip()
+        raw = (first_message or "").strip()
+        raw = raw.replace("\n", " ").replace("\r", " ")
+        raw = re.sub(r"\s+", " ", raw).strip()
+        raw = raw.strip("`'\"“”‘’ ")
+        raw = re.sub(r"[.!?,;:]+$", "", raw).strip()
+        base = " ".join((raw or "").split()[:6]).strip()
         base = "".join(ch for ch in base if ch.isalnum() or ch.isspace() or ch in "-_").strip()
+        base = re.sub(r"\s+", " ", base).strip()
         if not base:
             base = "Chat"
         base = base[:28].strip()
@@ -4147,6 +4196,127 @@ class ChatbotGUI(QWidget):
             t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
             return t.replace("\n", "<br>")
 
+        def split_fenced_blocks(s: str) -> list[tuple[str, str, str]]:
+            out: list[tuple[str, str, str]] = []
+            if not s:
+                return out
+            rx = re.compile(r"```([A-Za-z0-9_+\\-]*)\\s*\\n([\\s\\S]*?)```", re.MULTILINE)
+            pos = 0
+            for m in rx.finditer(s):
+                a, b = m.span()
+                if a > pos:
+                    out.append(("text", s[pos:a], ""))
+                lang = (m.group(1) or "").strip()
+                code = (m.group(2) or "").rstrip("\n")
+                out.append(("code", code, lang))
+                pos = b
+            if pos < len(s):
+                out.append(("text", s[pos:], ""))
+            return out
+
+        def make_code_block(code: str, lang: str) -> QWidget:
+            frame = QFrame()
+            frame.setObjectName("CodeBlockFrame")
+            frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            frame.setMaximumWidth(max_bubble)
+
+            bg = "#0b1220" if self.theme == "dark" else "#f3f5f9"
+            border = "#243145" if self.theme == "dark" else "#d7dde8"
+            hdr_bg = "#111c2e" if self.theme == "dark" else "#e9edf6"
+            text_col = "#e8eefc" if self.theme == "dark" else "#111827"
+            muted_col = "#a9b4c6" if self.theme == "dark" else "#4b5563"
+
+            frame.setStyleSheet(
+                "QFrame#CodeBlockFrame{"
+                f"background:{bg};"
+                f"border:1px solid {border};"
+                "border-radius:12px;"
+                "}"
+            )
+            fx = QGraphicsDropShadowEffect()
+            fx.setBlurRadius(18)
+            fx.setOffset(0, 6)
+            fx.setColor(QColor(0, 0, 0, 120 if self.theme == "dark" else 60))
+            frame.setGraphicsEffect(fx)
+
+            lay = QVBoxLayout(frame)
+            lay.setContentsMargins(12, 10, 12, 12)
+            lay.setSpacing(8)
+
+            hdr = QWidget()
+            hdr_l = QHBoxLayout(hdr)
+            hdr_l.setContentsMargins(0, 0, 0, 0)
+            hdr_l.setSpacing(10)
+
+            chip = QLabel((lang or "code").strip()[:18] or "code")
+            chip.setObjectName("CodeLangChip")
+            chip.setStyleSheet(
+                "QLabel#CodeLangChip{"
+                f"background:{hdr_bg};"
+                f"color:{muted_col};"
+                "border-radius:10px;"
+                "padding:3px 10px;"
+                "font-size:12px;"
+                "font-weight:700;"
+                "}"
+            )
+            hdr_l.addWidget(chip)
+            hdr_l.addStretch()
+
+            copy_btn = QToolButton()
+            copy_btn.setText("⧉")
+            copy_btn.setCursor(Qt.PointingHandCursor)
+            copy_btn.setAutoRaise(True)
+            copy_btn.setFocusPolicy(Qt.StrongFocus)
+            copy_btn.setAccessibleName("Copy code")
+            copy_btn.setToolTip("Copy")
+            copy_btn.setStyleSheet(
+                "QToolButton{"
+                "background:transparent;"
+                f"color:{muted_col};"
+                "border:0;"
+                "font-size:14px;"
+                "padding:4px 6px;"
+                "}"
+                "QToolButton:hover{"
+                f"color:{text_col};"
+                "}"
+                "QToolButton:focus{"
+                f"outline: 0px; border:1px solid {border}; border-radius:8px;"
+                "}"
+            )
+            def _do_copy(_checked: bool = False, txt: str = code) -> None:
+                try:
+                    QApplication.clipboard().setText(txt or "")
+                except Exception:
+                    pass
+            copy_btn.clicked.connect(_do_copy)
+            hdr_l.addWidget(copy_btn)
+            lay.addWidget(hdr)
+
+            ed = QPlainTextEdit()
+            ed.setReadOnly(True)
+            ed.setLineWrapMode(QPlainTextEdit.NoWrap)
+            ed.setPlainText(code or "")
+            ed.setFrameShape(QFrame.NoFrame)
+            ed.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            ed.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            ed.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            fnt = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+            fnt.setPointSize(13)
+            fnt.setWeight(QFont.Normal)
+            ed.setFont(fnt)
+            ed.setStyleSheet(
+                "QPlainTextEdit{"
+                "background:transparent;"
+                f"color:{text_col};"
+                "selection-background-color: rgba(124, 77, 255, 0.35);"
+                "padding:0px;"
+                "}"
+            )
+            lay.addWidget(ed)
+            return frame
+
         clear_layout(self.chat_msgs_layout)
 
         max_bubble = 820
@@ -4184,7 +4354,7 @@ class ChatbotGUI(QWidget):
                 lbl = QLabel()
                 lbl.setWordWrap(True)
                 lbl.setTextFormat(Qt.RichText)
-                lbl.setText(f"<div style='text-align:right;color:{colors['text']};font-size:16px;line-height:1.5;'>{fmt_html(m.get('content',''))}</div>")
+                lbl.setText(f"<div style='text-align:left;color:{colors['text']};font-size:16px;line-height:1.5;'>{fmt_html(m.get('content',''))}</div>")
                 lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 lbl.setMaximumWidth(max_bubble - 28)
                 b_l.addWidget(lbl)
@@ -4256,14 +4426,22 @@ class ChatbotGUI(QWidget):
 
                     w_l.addWidget(thought_frame)
 
-                ans = (m.get("answer", "") or "").strip()
-                if ans:
-                    a_lbl = QLabel()
-                    a_lbl.setWordWrap(True)
-                    a_lbl.setTextFormat(Qt.RichText)
-                    a_lbl.setText(f"<div style='color:{colors['text']};font-size:18px;line-height:1.7;'>{fmt_html(ans)}</div>")
-                    a_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                    w_l.addWidget(a_lbl)
+                ans = (m.get("answer", "") or "")
+                if ans.strip():
+                    parts = split_fenced_blocks(ans)
+                    for kind, payload, lang in parts:
+                        if kind == "code":
+                            w_l.addWidget(make_code_block(payload, lang))
+                            continue
+                        text = (payload or "").strip("\n")
+                        if not text.strip():
+                            continue
+                        a_lbl = QLabel()
+                        a_lbl.setWordWrap(True)
+                        a_lbl.setTextFormat(Qt.RichText)
+                        a_lbl.setText(f"<div style='color:{colors['text']};font-size:18px;line-height:1.7;'>{fmt_html(text)}</div>")
+                        a_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                        w_l.addWidget(a_lbl)
 
                 meta = m.get("meta")
                 if isinstance(meta, dict):

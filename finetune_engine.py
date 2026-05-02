@@ -53,6 +53,18 @@ class FinetuneEngine:
         cmd += ["--batch-size", str(batch_size), "--num-layers", str(num_layers), "--iters", str(iters)]
         if os.environ.get("LOKUMAI_FT_GRAD_CHECKPOINT", "1") != "0":
             cmd += ["--grad-checkpoint"]
+        val_batches = os.environ.get("LOKUMAI_FT_VAL_BATCHES", "1").strip()
+        if val_batches:
+            cmd += ["--val-batches", str(val_batches)]
+        steps_per_eval = os.environ.get("LOKUMAI_FT_STEPS_PER_EVAL", "200").strip()
+        if steps_per_eval:
+            cmd += ["--steps-per-eval", str(steps_per_eval)]
+        max_seq = os.environ.get("LOKUMAI_FT_MAX_SEQ_LENGTH", "768").strip()
+        if max_seq:
+            cmd += ["--max-seq-length", str(max_seq)]
+        clear_thr = os.environ.get("LOKUMAI_FT_CLEAR_CACHE_THRESHOLD", "2.0").strip()
+        if clear_thr:
+            cmd += ["--clear-cache-threshold", str(clear_thr)]
         if adapter_path:
             cmd += ["--adapter-path", str(adapter_path)]
         if config_path:
