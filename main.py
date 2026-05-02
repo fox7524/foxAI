@@ -149,7 +149,7 @@ except Exception as e:
 
 # Application version and dev mode password
 VERSION = "LokumAI"
-DEV_MODE_PASSWORD = os.environ.get("LOKUMAI_DEV_PASSWORD", "123")
+DEV_MODE_PASSWORD = os.environ.get("LOKUMAI_DEV_PASSWORD", "lokum123")
 
 # ---------------------------------------------------------
 # WORKER THREADS (Background Processing)
