@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+
+app.db
+
+lora_data/adapters/
+lora_data/train_only/
+lora_data/validate_only/
+lora_data/lora_cfg_*.yaml
+
+faiss_index.bin
+docs_metadata.npy
+chunks_meta.npy
