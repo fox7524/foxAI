@@ -1359,7 +1359,7 @@ class DevPanelDialog(QWidget):
 
         c_layout.addWidget(QLabel("Preset:"), 0, 0)
         self.ft_preset = QComboBox()
-        self.ft_preset.addItems(["Safe (Recommended)", "Faster (More RAM)", "Quick Test"])
+        self.ft_preset.addItems(["Safe (Recommended)", "Reccommended", "Ultra Safe (Less RAM)", "Faster (More RAM)", "Quick Test"])
         c_layout.addWidget(self.ft_preset, 0, 1)
         
         c_layout.addWidget(QLabel("Rank:"), 1, 0)
@@ -1628,6 +1628,38 @@ class DevPanelDialog(QWidget):
             name = (self.ft_preset.currentText() if hasattr(self, "ft_preset") else "").strip()
         except Exception:
             name = ""
+        if name == "Reccommended":
+            self.lora_rank.setValue(16)
+            self.lora_alpha.setValue(64)
+            self.lora_iters.setValue(900)
+            self.lora_batch.setValue(1)
+            self.lora_layers.setValue(16)
+            self.ft_max_seq.setValue(768)
+            self.ft_steps_per_eval.setValue(200)
+            self.ft_val_batches.setValue(1)
+            self.ft_clear_cache_thr.setValue(2.0)
+            try:
+                if hasattr(self, "ft_presplit") and self.ft_presplit is not None:
+                    self.ft_presplit.setChecked(True)
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "ft_do_valid") and self.ft_do_valid is not None:
+                    self.ft_do_valid.setChecked(True)
+            except Exception:
+                pass
+            return
+        if name == "Ultra Safe (Less RAM)":
+            self.lora_rank.setValue(8)
+            self.lora_alpha.setValue(32)
+            self.lora_iters.setValue(500)
+            self.lora_batch.setValue(1)
+            self.lora_layers.setValue(6)
+            self.ft_max_seq.setValue(384)
+            self.ft_steps_per_eval.setValue(0)
+            self.ft_val_batches.setValue(0)
+            self.ft_clear_cache_thr.setValue(1.0)
+            return
         if name == "Faster (More RAM)":
             self.lora_rank.setValue(8)
             self.lora_alpha.setValue(32)
@@ -1925,6 +1957,18 @@ class DevPanelDialog(QWidget):
                 self._ft_post_validate = bool(do_valid)
                 self._ft_post_validate_dir = orig_data_dir
                 self._ft_post_validate_cfg = cfg_path
+                self._ft_model_path_used = model_path
+                try:
+                    if os.environ.get("LOKUMAI_FT_PRESPLIT", "1") != "0":
+                        info = eng.presplit_dataset(data_dir, max_seq, batch)
+                        self.train_log.appendPlainText(
+                            f"[presplit] train_changed={int(info.get('train_changed', 0))} valid_changed={int(info.get('valid_changed', 0))}"
+                        )
+                except Exception as e:
+                    try:
+                        self.train_log.appendPlainText(f"[presplit] ERROR: {e}")
+                    except Exception:
+                        pass
                 proc = eng.start_training(
                     batch_size=batch,
                     num_layers=layers,
@@ -2012,9 +2056,11 @@ class DevPanelDialog(QWidget):
             try:
                 data_dir = str(getattr(self, "_ft_post_validate_dir", "") or "")
                 cfg_path = str(getattr(self, "_ft_post_validate_cfg", "") or "")
+                model_path = str(getattr(self, "_ft_model_path_used", "") or "")
             except Exception:
                 data_dir = ""
                 cfg_path = ""
+                model_path = ""
             try:
                 self.train_log.appendPlainText("[valid] Starting post-training validation…")
             except Exception:
@@ -2025,7 +2071,7 @@ class DevPanelDialog(QWidget):
             except Exception:
                 pass
             try:
-                eng = FinetuneEngine(self.main_app.current_model_path if self.main_app else "")
+                eng = FinetuneEngine(model_path)
                 proc = eng.start_validation(dataset_path=data_dir, adapter_path=adapter_path, config_path=cfg_path)
                 self._finalize_ft_worker()
                 self._ft_worker = FineTuneWorker(proc, adapter_path)

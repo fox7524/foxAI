@@ -11,8 +11,8 @@ def _presplit_text(text: str, max_seq_length: int, batch_size: int) -> list[str]
     t = text or ""
     max_seq_length = int(max_seq_length) if int(max_seq_length) > 0 else 512
     batch_size = int(batch_size) if int(batch_size) > 0 else 1
-    limit_chars = int(max_seq_length * 4)
-    eff_limit = max(512, int(limit_chars / max(1, batch_size)))
+    limit_chars = int(max_seq_length * 2.0)
+    eff_limit = max(256, int(limit_chars / max(1, batch_size)))
     if len(t) <= eff_limit:
         return [t]
     if "<|im_start|>" in t and "<|im_end|>" in t:
@@ -144,6 +144,19 @@ class FinetuneEngine:
                 
         return train_path
 
+    def presplit_dataset(self, dataset_path: str, max_seq_length: int, batch_size: int) -> dict:
+        data_dir = os.path.abspath(dataset_path or self.dataset_dir)
+        train_fp = os.path.join(data_dir, "train.jsonl")
+        valid_fp = os.path.join(data_dir, "valid.jsonl")
+        train_changed = _presplit_jsonl_file(train_fp, int(max_seq_length), int(batch_size))
+        valid_changed = _presplit_jsonl_file(valid_fp, int(max_seq_length), int(batch_size))
+        return {
+            "train_changed": int(train_changed),
+            "valid_changed": int(valid_changed),
+            "train_fp": train_fp,
+            "valid_fp": valid_fp,
+        }
+
     def start_training(
         self,
         batch_size=2,
@@ -156,13 +169,6 @@ class FinetuneEngine:
     ) -> subprocess.Popen:
         """Starts the MLX LoRA training loop as a non-blocking subprocess."""
         data_dir = dataset_path if dataset_path else self.dataset_dir
-        try:
-            if os.environ.get("LOKUMAI_FT_PRESPLIT", "1") != "0":
-                max_seq = int(os.environ.get("LOKUMAI_FT_MAX_SEQ_LENGTH", "512").strip() or "512")
-                _presplit_jsonl_file(os.path.join(os.path.abspath(data_dir), "train.jsonl"), max_seq, int(batch_size))
-                _presplit_jsonl_file(os.path.join(os.path.abspath(data_dir), "valid.jsonl"), max_seq, int(batch_size))
-        except Exception:
-            pass
         cmd = [sys.executable, "-m", "mlx_lm", "lora", "--model", self.model_path, "--train", "--data", data_dir]
         cmd += ["--batch-size", str(batch_size), "--num-layers", str(num_layers), "--iters", str(iters)]
         if resume_adapter_file:

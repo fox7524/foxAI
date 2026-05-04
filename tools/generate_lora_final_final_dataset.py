@@ -21,7 +21,7 @@ def _read_prompts_system() -> str:
 def _compact_system(system_prompt: str) -> str:
     sys_lines = [ln.rstrip() for ln in (system_prompt or "").splitlines()]
     sys_lines = [ln for ln in sys_lines if ln.strip()]
-    head = "\n".join(sys_lines[:80]).strip()
+    head = "\n".join(sys_lines[:25]).strip()
     base = "\n".join(
         [
             "You are LokumAI, a local expert AI pair-programmer.",
@@ -36,7 +36,10 @@ def _compact_system(system_prompt: str) -> str:
             "- Then: only the final answer",
         ]
     )
-    return (base + "\n\n" + head).strip()
+    sys_msg = (base + "\n\n" + head).strip()
+    if len(sys_msg) > 1200:
+        sys_msg = sys_msg[:1200].rstrip()
+    return sys_msg
 
 
 def _chatml(system: str, user: str, assistant: str) -> str:
