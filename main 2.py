@@ -56,7 +56,7 @@ To run: python main.py
 Model path is hardcoded at bottom of file.
 """
 
-import sys
+
 import os
 import time
 import json
