@@ -5,5 +5,5 @@
     "theme": "dark",
     "model_path": "/Users/fox/.lmstudio/models/Jackrong/MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-6bit",
     "project_root": "",
-    "use_rag": false
+    "use_rag": true
 }
